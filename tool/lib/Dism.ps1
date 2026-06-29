@@ -38,10 +38,14 @@ function dism-tool {
 
 	$title = "DISM Compress $compression"
 	$name = "STC"
-
-	$log = "C:\Temp\backup_bench_logs\dism_compress_${compression}\dism-wim.log"
-	$timeLog = "C:\Temp\backup_bench_logs\dism_compress_${compression}\dism-wim-time.txt"
+	$runId = Get-Date -Format "yyyyMMdd-HHmmss"
+	$log = "C:\Temp\backup_logs\dism_compress_${compression}\dism-wim-$runId.log"
+	$timeLog = "C:\Temp\backup_logs\dism_compress_${compression}\dism-wim-time-$runId.txt"
 	$scratchDir = "C:\Temp\dism_scratch"
+	$logFolder = Split-Path -Parent $log
+
+	New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
+	New-Item -ItemType Directory -Force -Path $scratchDir | Out-Null
 
 	. "$LibRoot\Common.ps1"
 	Show-PathHelp -Title $title
@@ -77,16 +81,10 @@ function dism-tool {
 	}
 
 	$destFolder = Split-Path -Parent $dest
-	$logFolder = Split-Path -Parent $log
-	$timeLogFolder = Split-Path -Parent $timeLog
 
 	if (-not [string]::IsNullOrWhiteSpace($destFolder)) {
 			New-Item -ItemType Directory -Force -Path $destFolder | Out-Null
 	}
-
-	New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
-	New-Item -ItemType Directory -Force -Path $timeLogFolder | Out-Null
-	New-Item -ItemType Directory -Force -Path $scratchDir | Out-Null
 
 	Write-Host ""
 	Write-Host "Capturing image:"

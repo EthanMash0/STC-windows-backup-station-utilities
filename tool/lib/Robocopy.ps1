@@ -50,9 +50,13 @@ function robocopy-tool {
 
 	$padded = $mt.ToString("D3")
 	$title = "Robocopy $padded Thread"
-	$log = "C:\Temp\backup_bench_logs\robocopy_${padded}_thread\robocopy.log"
-	$timeLog = "C:\Temp\backup_bench_logs\robocopy_${padded}_thread\robocopy-time.txt"
+	$runId = Get-Date -Format "yyyyMMdd-HHmmss"
+	$log = "C:\Temp\backup_logs\robocopy_${padded}_thread\robocopy-$runId.log"
+	$timeLog = "C:\Temp\backup_logs\robocopy_${padded}_thread\robocopy-time-$runId.txt"
+	$logFolder = Split-Path -Parent $log
 
+	New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
+	
 	. "$LibRoot\Common.ps1"
 	Show-PathHelp -Title $title
 
@@ -81,12 +85,6 @@ function robocopy-tool {
 			Pause
 			return
 	}
-
-	$logFolder = Split-Path -Parent $log
-	$timeLogFolder = Split-Path -Parent $timeLog
-
-	New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
-	New-Item -ItemType Directory -Force -Path $timeLogFolder | Out-Null
 
 	Write-Host ""
 	Write-Host "Copying:"

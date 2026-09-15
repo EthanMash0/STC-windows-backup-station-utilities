@@ -1,9 +1,11 @@
 $LibRoot = $PSScriptRoot
 
-function folder-size-tool {
+# import
+. "$LibRoot\Common.ps1"
+
+function Invoke-FolderSizeTool {
 	$title = "Folder Size Counter"
 
-	. "$LibRoot\Common.ps1"
 	Show-PathHelp -Title $title
 
 	$inputPath = Read-Host "Path"

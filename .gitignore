@@ -1,2 +1,6 @@
 # os clutter
 .DS_Store
+
+# ide
+.vscode
+.cursor

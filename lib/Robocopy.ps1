@@ -1,54 +1,70 @@
 ﻿$LibRoot = $PSScriptRoot
 
-function robocopy-tool {
+# import
+. "$LibRoot\Common.ps1"
+
+# shared flags
+$script:RobocopyCopyFlags = @(
+		'/E',
+		'/COPY:DAT',
+		'/DCOPY:DAT',
+		'/BYTES',
+		'/XJ',
+		'/R:3',
+		'/W:5'
+)
+
+# =============================================================================
+#  Helpers
+# =============================================================================
+
+function Read-RobocopyThreadCount {
 	Write-Host ""
-	Write-Host "Robocopy CLI Tool"
-	Write-Host "-----------------"
+	Write-Host "Copy Tool (Robocopy based)"
+	Write-Host "--------------------------"
 	Write-Host "Options:"
-	Write-Host "1. 1 Thread"
-	Write-Host "2. 8 Threads"
-	Write-Host "3. 16 Threads"
-	Write-Host "4. 32 Threads"
-	Write-Host "5. 64 Threads"
-	Write-Host "6. 128 Threads"
-	Write-Host "7. Exit"
+	Write-Host ""
+	Write-Host "1. Slow (1 Thread)"
+	Write-Host "   * 1 copy thread, or 1 file at a time" -ForegroundColor Gray
+	Write-Host "2. Standard (16 Threads)"
+	Write-Host "   * 16 copy threads, or up to 16 files at a time" -ForegroundColor Gray
+	Write-Host "3. Fast (64 Threads)"
+	Write-Host "   * 64 copy threads, or up to 64 files at a time" -ForegroundColor Gray
+	Write-Host "4. Exit"
 	Write-Host ""
 
 	do {
-		$tool = Read-Host "Enter choice (1-7)"
+		$tool = Read-Host "Enter choice (1-4)"
 		$tool = $tool.Trim().Trim('"')
 
-		if ($tool -notin '1', '2', '3', '4', '5', '6', '7') {
-			Write-Host "Invalid choice. Enter a number in the range 1-7."
+		if ($tool -notin '1', '2', '3', '4') {
+			Write-Host "Invalid choice. Enter a number in the range 1-4."
 		}
-	} while ($tool -notin '1', '2', '3', '4', '5', '6', '7')
+	} while ($tool -notin '1', '2', '3', '4')
 
 	switch ($tool) {
 		'1' {
-			$mt = 1
+			return 1
 		}
 		'2' {
-			$mt = 8
+			return 16
 		}
 		'3' {
-			$mt = 16
+			return 64
 		}
 		'4' {
-			$mt = 32
-		}
-		'5' {
-			$mt = 64
-		}
-		'6' {
-			$mt = 128
-		}
-		'7' {
 			Write-Host "Exiting."
-			return
+			return $null
 		}
 	}
+}
 
-	$padded = $mt.ToString("D3")
+function New-RobocopyLogPaths {
+	param(
+		[int]$ThreadCount
+	)
+
+	$padded = $ThreadCount.ToString("D2")
 	$title = "Robocopy $padded Thread"
 	$runId = Get-Date -Format "yyyyMMdd-HHmmss"
 	$log = "C:\Temp\backup_logs\robocopy_${padded}_thread\robocopy-$runId.log"
@@ -56,9 +72,20 @@ function robocopy-tool {
 	$logFolder = Split-Path -Parent $log
 
 	New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
-	
-	. "$LibRoot\Common.ps1"
-	Show-PathHelp -Title $title
+
+	return [pscustomobject]@{
+		Title		= $title
+		Log			= $log
+		TimeLog	= $timeLog
+	}
+}
+
+function Read-CopyPaths {
+	param(
+		[string]$Title
+	)
+
+	Show-PathHelp -Title $Title
 
 	$source = Read-Host "Source"
 	$source = $source.Trim().Trim('"').TrimEnd('\')
@@ -66,79 +93,242 @@ function robocopy-tool {
 	if ([string]::IsNullOrWhiteSpace($source)) {
 			Write-Host "No source entered. Exiting."
 			Pause
-			return
+			return $null
 	}
 
 	if (-not (Test-Path -LiteralPath $source -PathType Container)) {
 			Write-Host "Source folder does not exist. Exiting."
 			Write-Host $source
 			Pause
-			return
+			return $null
 	}
 
 	Write-Host ""
+	Show-PathHelp
+
 	$dest = Read-Host "Destination"
 	$dest = $dest.Trim().Trim('"')
 
 	if ([string]::IsNullOrWhiteSpace($dest)) {
 			Write-Host "No destination entered. Exiting."
 			Pause
-			return
+			return $null
 	}
 
-	Write-Host ""
-	Write-Host "Copying:"
-	Write-Host "  Source:      $source"
-	Write-Host "  Destination: $dest"
-	Write-Host ""
+	return [pscustomobject]@{
+		Source	= $source
+		Dest		= $dest
+	}
+}
 
-	$start = Get-Date
+function Get-RobocopyEstimate {
+	param(
+		[string]$Source,
+		[string]$Dest
+	)
 
 	$dryRun = robocopy `
-		$source `
-		$dest `
+		$Source `
+		$Dest `
 		/L `
 		/NFL `
 		/NDL `
 		/NJH `
 		/NP `
-		/E `
-		/COPY:DAT `
-		/DCOPY:DAT `
-		/BYTES `
-		/XJ `
-		/R:3 `
-		/W:5
+		@script:RobocopyCopyFlags
 
-	$totalBytes = ($dryRun	-match 'Bytes :' -split '[\t ]+')[3]
-	$totalFiles = ($dryRun	-match 'Files :' -split '[\t ]+')[3]
+	$totalBytes = [long]($dryRun	-match 'Bytes :' -split '[\t ]+')[3]
+	$totalFiles = [long]($dryRun	-match 'Files :' -split '[\t ]+')[3]
 
-	$totalMB = [Math]::Round($totalBytes / 1MB, 2)
+	return [pscustomobject]@{
+		TotalBytes	= $totalBytes
+		TotalFiles	= $totalFiles
+		TotalMB			= [Math]::Round($totalBytes / 1MB, 2)
+	}
+}
 
-	$currentBytes = 0
-	$currentFiles = 0
+function Write-RobocopySummary {
+	param(
+		[string]$Source,
+		[string]$Dest,
+		[datetime]$Start,
+		[datetime]$End,
+		[int]$ExitCode,
+		[string]$TimeLog,
+		[string]$Log
+	)
 
+	$duration = $End - $Start
+	$status = if ($ExitCode -le 7) {
+			"Completed without fatal failure"
+	} else {
+			"Failed"
+	}
+
+@"
+Source:      $Source
+Destination: $Dest
+Start:       $Start
+End:         $End
+Duration:    $duration
+Seconds:     $([math]::Round($duration.TotalSeconds, 2))
+Minutes:     $([math]::Round($duration.TotalMinutes, 2))
+ExitCode:    $ExitCode
+Status:      $status
+"@ | Tee-Object -FilePath $TimeLog
+
+	Write-Host ""
+	if ($exitCode -le 7) {
+			Write-Host "Robocopy completed without fatal failure."
+	} else {
+			Write-Host "Robocopy failed. Check $Log"
+	}
+	Write-Host ""
+}
+
+function Get-ClampedPercent {
+	param(
+		[double]$Current,
+		[double]$Total
+	)
+
+	if ($Total -le 0) {
+		return 100
+	}
+
+	return [Math]::Min([Math]::Round(($Current / $Total) * 100, 2), 100)
+}
+
+function New-ProgressBar {
+	param(
+		[double]$Percent,
+		[int]$BarWidth
+	)
+	$fillLen = [Math]::Round(($Percent / 100) * $BarWidth)
+	$emptyLen = $BarWidth - $fillLen
+	$fillStr = [String]::new('=', $fillLen)
+	$emptyStr = [String]::new(' ', $emptyLen)
+	
+	return ' [' + $fillStr + $emptyStr + '] ' + $Percent + '%'
+}
+
+function New-ProgressLayout {
 	$barWidth = 40
-
-	$overallStr = " Overall Progress"
-	$itemStr = " Current File"
-	$dataStr = " Data: "
-	$filesStr = " Files: "
-	$pathStr = " Path: "
-	$sepStr = " / "
-	$dataUnitStr = " MB"
-
 	$consoleWidth = [Console]::WindowWidth - 1
 	$innerWidth = $consoleWidth - 2
 
 	$borderFill = [String]::new('─', $innerWidth)
 	$emptyFill = [String]::new(' ', $innerWidth)
-	$emptyBarFill = [String]::new(' ', $barWidth)
 
-	$topStr = "┌" + $borderFill + "┐"
-	$bottomStr = "└" + $borderFill + "┘"
-	$crossStr = "├" + $borderFill + "┤"
-	$middleStr = "│" + $emptyFill + "│"
+	return [pscustomobject]@{
+		BarWidth			= $barWidth
+		ConsoleWidth	= $consoleWidth
+		InnerWidth		= $innerWidth
+		OverallStr		= " Overall Progress"
+		ItemStr				= " Current File"
+		DataStr				= " Data: "
+		FilesStr			= " Files: "
+		PathStr				= " Path: "
+		SepStr				= " / "
+		DataUnitStr		= " MB"
+		Top						= "┌" + $borderFill + "┐"
+		Bottom				= "└" + $borderFill + "┘"
+		Cross					= "├" + $borderFill + "┤"
+		Middle				= "│" + $emptyFill + "│"
+	}
+}
+
+function Format-ProgressBox {
+	param(
+		$Layout,
+		[string]$Title,
+		[string[]]$Rows,
+		[switch]$TrailingBlank
+	)
+
+	$box = @(
+		$Layout.Top
+		"│" + $Title.PadRight($Layout.InnerWidth) + "│"
+		$Layout.Cross
+	)
+
+	foreach ($row in $Rows) {
+		if ([string]::IsNullOrEmpty($row)) {
+			$box += $Layout.Middle
+		} else {
+			$box += "│" + $row.PadRight($Layout.InnerWidth) + "│"
+		}
+	}
+
+	$box += $Layout.Bottom
+
+	if ($TrailingBlank) {
+		$box += ""
+	}
+	
+	return $box
+}
+
+function Write-CopyProgress {
+	param(
+		[string[]]$OverallLines,
+		[string[]]$ItemLines,
+		[int]$CursorTop
+	)
+
+	[Console]::SetCursorPosition(0, $CursorTop)
+	foreach ($line in $OverallLines) {
+		Write-Host $line
+	}
+
+	$overallEnd = [Console]::CursorTop
+	$itemEnd = $overallEnd
+
+	if ($null -ne $ItemLines) {
+		foreach ($line in $ItemLines) {
+			Write-Host $line
+		}
+
+		$itemEnd = [Console]::CursorTop
+	}
+
+	return [pscustomobject]@{
+		OverallEnd	= $overallEnd
+		ItemEnd			= $itemEnd
+	}
+}
+
+# =============================================================================
+#  Orchestrator
+# =============================================================================
+
+function Invoke-RobocopyTool {
+	$mt = Read-RobocopyThreadCount
+	if ($null -eq $mt) {
+		return
+	}
+
+	$logPaths = New-RobocopyLogPaths -ThreadCount $mt	
+	
+	$copyPaths = Read-CopyPaths -Title $logPaths.Title
+	if ($null -eq $copyPaths) {
+		return
+	}
+
+	# echo paths back to user
+	Write-Host ""
+	Write-Host "Copying:"
+	Write-Host "  Source:      $($copyPaths.Source)"
+	Write-Host "  Destination: $($copyPaths.Dest)"
+	Write-Host ""
+
+	$estimate = Get-RobocopyEstimate -Source $copyPaths.Source -Dest $copyPaths.Dest
+
+	$currentBytes = 0
+	$currentMB = 0
+	$currentFiles = 0
+	
+	$layout = New-ProgressLayout
 
 	$newItem = $false
 	$makeProgress = $false
@@ -151,19 +341,16 @@ function robocopy-tool {
 	$overallProgressEnd = $progressTop
 	$itemProgressEnd = $progressTop
 
+	# start timer
+	$start = Get-Date
+
 	try {
 		[Console]::CursorVisible = $false
-		robocopy $source $dest `
-			/E `
-			/COPY:DAT `
-			/DCOPY:DAT `
-			/BYTES `
-			/XJ `
+		robocopy $copyPaths.Source $copyPaths.Dest `
+			@script:RobocopyCopyFlags `
 			/MT:$mt `
-			/R:3 `
-			/W:5 `
 			/TEE `
-			/LOG:$log | ForEach-Object {
+			/LOG:$($logPaths.Log) | ForEach-Object {
 
 			$line = $_.ToString()
 
@@ -176,48 +363,25 @@ function robocopy-tool {
 				$itemMB = [Math]::Round($itemBytes / 1MB, 2)
 
 				$fileName = $matches[3]
-				if (($pathStr.Length + $fileName.Length + 4) -gt $innerWidth) {
-					$availableSpace = $innerWidth - $pathStr.Length - 4
+				if (($layout.PathStr.Length + $fileName.Length + 4) -gt $layout.InnerWidth) {
+					$availableSpace = $layout.InnerWidth - $layout.PathStr.Length - 4
 					$fileName = "..." + $fileName.Substring($fileName.Length - $availableSpace)
 				}
+				
+				$dataPercent = Get-ClampedPercent -Current $currentBytes -Total $estimate.TotalBytes
+				$filesPercent = Get-ClampedPercent -Current $currentFiles -Total $estimate.TotalFiles
 
-				if ($totalBytes -gt 0) {
-					$dataPercent = [Math]::Round(($currentBytes / $totalBytes) * 100, 2)
-				} else {
-					$dataPercent = 100
-				}
-				$dataPercent = [Math]::Min($dataPercent, 100)
+				$overallData = $layout.DataStr + $currentMB + $layout.SepStr + $estimate.TotalMB + $layout.DataUnitStr
+				$dataProgressBar = New-ProgressBar -Percent $dataPercent -BarWidth $layout.BarWidth
 
-				if ($totalFiles -gt 0) {
-					$filesPercent = [Math]::Round(($currentFiles / $totalFiles) * 100, 2)
-				} else {
-					$filesPercent = 100
-				}
-				$filesPercent = [Math]::Min($filesPercent, 100)
+				$overallFiles = $layout.FilesStr + $currentFiles + $layout.SepStr + $estimate.TotalFiles
+				$filesProgressBar = New-ProgressBar -Percent $filesPercent -BarWidth $layout.BarWidth
 
-				$itemPercent = 0
+				$itemPath = $layout.PathStr + $fileName
+				
+				$itemData = $layout.DataStr + "0" + $layout.SepStr + $itemMB + $layout.DataUnitStr
 
-				$overallData = $dataStr + $currentMB + $sepStr + $totalMB + $dataUnitStr
-
-				$dataFillLen = [Math]::Round(($dataPercent / 100) * $barWidth)
-				$dataEmptyLen = $barWidth - $dataFillLen
-				$dataFillStr = [String]::new('=', $dataFillLen)
-				$dataEmptyStr = [String]::new(' ', $dataEmptyLen) 
-				$dataProgressBar = ' [' + $dataFillStr + $dataEmptyStr + '] ' + $dataPercent + '%'
-
-				$overallFiles = $filesStr + $currentFiles + $sepStr + $totalFiles
-
-				$filesFillLen = [Math]::Round(($filesPercent / 100) * $barWidth)
-				$filesEmptyLen = $barWidth - $filesFillLen
-				$filesFillStr = [String]::new('=', $filesFillLen)
-				$filesEmptyStr = [String]::new(' ', $filesEmptyLen) 
-				$filesProgressBar = ' [' + $filesFillStr + $filesEmptyStr + '] ' + $filesPercent + '%'
-
-				$itemPath = $pathStr + $fileName
-
-				$itemData = $dataStr + "0" + $sepStr + $itemMB + $dataUnitStr
-
-				$itemProgressBar = ' [' + $emptyBarFill + '] ' + $itemPercent + '%'
+				$itemProgressBar = New-ProgressBar -Percent 0 -BarWidth $layout.BarWidth
 			}
 			elseif ($line -match "^(  \d| \d{2}|\d{3})%\s*$") {
 				$initiated = $true
@@ -228,13 +392,9 @@ function robocopy-tool {
 
 				$currentItemMB = [Math]::Round(($itemPercent / 100) * $itemMB, 2)
 
-				$itemData = $dataStr + $currentItemMB + $sepStr + $itemMB + $dataUnitStr
+				$itemData = $layout.DataStr + $currentItemMB + $layout.SepStr + $itemMB + $layout.DataUnitStr
 
-				$itemFillLen = [Math]::Round(($itemPercent / 100) * $barWidth)
-				$itemEmptyLen = $barWidth - $itemFillLen
-				$itemFillStr = [String]::new('=', $itemFillLen)
-				$itemEmptyStr = [String]::new(' ', $itemEmptyLen) 
-				$itemProgressBar = ' [' + $itemFillStr + $itemEmptyStr + '] ' + $itemPercent + '%'
+				$itemProgressBar = New-ProgressBar -Percent $itemPercent -BarWidth $layout.BarWidth
 			}
 			else {
 				$newItem = $false
@@ -242,47 +402,28 @@ function robocopy-tool {
 			}
 
 			if ($makeProgress -eq $true) {
-				$overallStatus = @(
-					$topStr
-					"│" + $overallStr.PadRight($innerWidth) + "│"
-					$crossStr
-					$middleStr
-					"│" + $overallData.PadRight($innerWidth) + "│"
-					"│" + $dataProgressBar.PadRight($innerWidth) + "│"
-					$middleStr
-					"│" + $overallFiles.PadRight($innerWidth) + "│"
-					"│" + $filesProgressBar.PadRight($innerWidth) + "│"
-					$middleStr
-					$bottomStr
-					""
+				$overallStatus = Format-ProgressBox -Layout $layout -Title $layout.OverallStr -TrailingBlank -Rows @(
+					''
+					$overallData
+					$dataProgressBar
+					''
+					$overallFiles
+					$filesProgressBar
+					''
 				)
 
-				$itemStatus = @(
-					$topStr
-					"│" + $itemStr.PadRight($innerWidth) + "│"
-					$crossStr
-					$middleStr
-					"│" + $itemPath.PadRight($innerWidth) + "│"
-					$middleStr
-					"│" + $itemData.PadRight($innerWidth) + "│"
-					"│" + $itemProgressBar.PadRight($innerWidth) + "│"
-					$middleStr
-					$bottomStr
+				$itemStatus = Format-ProgressBox -Layout $layout -Title $layout.ItemStr -Rows @(
+					''
+					$itemPath
+					''
+					$itemData
+					$itemProgressBar
+					''
 				)
 
-				[Console]::SetCursorPosition(0, $progressTop)
-
-				for ($i = 0; $i -lt $overallStatus.Count; $i++) {
-					Write-Host $overallStatus[$i]
-				}
-
-				$overallProgressEnd = [Console]::CursorTop
-
-				for ($i = 0; $i -lt $itemStatus.Count; $i++) {
-					Write-Host $itemStatus[$i]
-				}
-
-				$itemProgressEnd = [Console]::CursorTop
+				$progressEnds = Write-CopyProgress -OverallLines $overallStatus -ItemLines $itemStatus -CursorTop $progressTop
+				$overallProgressEnd = $progressEnds.OverallEnd
+				$itemProgressEnd = $progressEnds.ItemEnd
 			}
 
 			if ($newItem -eq $true) {
@@ -294,66 +435,33 @@ function robocopy-tool {
 	}
 	finally {
 		if ($initiated -eq $true) {
-			if ($totalBytes -gt 0) {
-				$dataPercent = [Math]::Round(($currentBytes / $totalBytes) * 100, 2)
-			} else {
-				$dataPercent = 100
-			}
-			$dataPercent = [Math]::Min($dataPercent, 100)
+			$dataPercent = Get-ClampedPercent -Current $currentBytes -Total $estimate.TotalBytes
+			$filesPercent = Get-ClampedPercent -Current $currentFiles -Total $estimate.TotalFiles
 
-			if ($totalFiles -gt 0) {
-				$filesPercent = [Math]::Round(($currentFiles / $totalFiles) * 100, 2)
-			} else {
-				$filesPercent = 100
-			}
-			$filesPercent = [Math]::Min($filesPercent, 100)
+			$overallData = $layout.DataStr + $currentMB + $layout.SepStr + $estimate.TotalMB + $layout.DataUnitStr
+			$dataProgressBar = New-ProgressBar -Percent $dataPercent -BarWidth $layout.BarWidth
 
-			$itemPercent = 0
+			$overallFiles = $layout.FilesStr + $currentFiles + $layout.SepStr + $estimate.TotalFiles
+			$filesProgressBar = New-ProgressBar -Percent $filesPercent -BarWidth $layout.BarWidth
 
-			$overallData = $dataStr + $currentMB + $sepStr + $totalMB + $dataUnitStr
-
-			$dataFillLen = [Math]::Round(($dataPercent / 100) * $barWidth)
-			$dataEmptyLen = $barWidth - $dataFillLen
-			$dataFillStr = [String]::new('=', $dataFillLen)
-			$dataEmptyStr = [String]::new(' ', $dataEmptyLen) 
-			$dataProgressBar = ' [' + $dataFillStr + $dataEmptyStr + '] ' + $dataPercent + '%'
-
-			$overallFiles = $filesStr + $currentFiles + $sepStr + $totalFiles
-
-			$filesFillLen = [Math]::Round(($filesPercent / 100) * $barWidth)
-			$filesEmptyLen = $barWidth - $filesFillLen
-			$filesFillStr = [String]::new('=', $filesFillLen)
-			$filesEmptyStr = [String]::new(' ', $filesEmptyLen) 
-			$filesProgressBar = ' [' + $filesFillStr + $filesEmptyStr + '] ' + $filesPercent + '%'
-
-			$overallStatus = @(
-				$topStr
-				"│" + $overallStr.PadRight($innerWidth) + "│"
-				$crossStr
-				$middleStr
-				"│" + $overallData.PadRight($innerWidth) + "│"
-				"│" + $dataProgressBar.PadRight($innerWidth) + "│"
-				$middleStr
-				"│" + $overallFiles.PadRight($innerWidth) + "│"
-				"│" + $filesProgressBar.PadRight($innerWidth) + "│"
-				$middleStr
-				$bottomStr
-				""
+			$overallStatus = Format-ProgressBox -Layout $layout -Title $layout.OverallStr -TrailingBlank -Rows @(
+				''
+				$overallData
+				$dataProgressBar
+				''
+				$overallFiles
+				$filesProgressBar
+				''
 			)
 
-			[Console]::SetCursorPosition(0, $progressTop)
-
-			for ($i = 0; $i -lt $overallStatus.Count; $i++) {
-				Write-Host $overallStatus[$i]
-			}
-
-			$overallProgressEnd = [Console]::CursorTop
+			$progressEnds = Write-CopyProgress -OverallLines $overallStatus -CursorTop $progressTop
+			$overallProgressEnd = $progressEnds.OverallEnd
 		}
 
 		[Console]::SetCursorPosition(0, $overallProgressEnd)
 
 		for ($i = 0; $i -lt ($itemProgressEnd - $overallProgressEnd); $i++) {
-			Write-Host "".PadRight($consoleWidth)
+			Write-Host "".PadRight($layout.ConsoleWidth)
 		}
 
 		[Console]::SetCursorPosition(0, $overallProgressEnd)
@@ -363,33 +471,15 @@ function robocopy-tool {
 	}
 
 	$exitCode = $LASTEXITCODE
+	# end timer
 	$end = Get-Date
-	$duration = $end - $start
 
-	$status = if ($exitCode -le 7) {
-			"Completed without fatal failure"
-	} else {
-			"Failed"
-	}
-
-@"
-Source:           $source
-Destination:      $dest
-Start:            $start
-End:              $end
-Duration:         $duration
-Seconds:          $([math]::Round($duration.TotalSeconds, 2))
-Minutes:          $([math]::Round($duration.TotalMinutes, 2))
-Robocopy ExitCode: $exitCode
-Status:           $status
-"@ | Tee-Object -FilePath $timeLog
-
-	Write-Host ""
-	if ($exitCode -le 7) {
-			Write-Host "Robocopy completed without fatal failure."
-	} else {
-			Write-Host "Robocopy failed. Check $log"
-	}
-
-	Write-Host ""
+	Write-RobocopySummary `
+		-Source $copyPaths.Source `
+		-Dest $copyPaths.Dest `
+		-Start $start `
+		-End $end `
+		-ExitCode $exitCode `
+		-TimeLog $logPaths.TimeLog `
+		-Log $logPaths.Log
 }

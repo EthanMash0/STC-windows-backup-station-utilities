@@ -12,12 +12,12 @@ Menu-driven PowerShell tools for Yale Student Technology Collaborative (STC) Win
 
 ## How to run
 
-Double-click `run.bat`. That opens an elevated PowerShell window in this folder and starts `BackupBench.ps1`.
+Double-click `run.bat`. That opens an elevated PowerShell window in this folder and starts `BackupTool.ps1`.
 
 To run the menu yourself:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\STC-windows-backup-station-utilities\BackupBench.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\STC-windows-backup-station-utilities\BackupTool.ps1"
 ```
 
 There are no command-line arguments. Source, destination, and options are entered in the console.
@@ -64,7 +64,7 @@ D:\Users\STC
 ## Project layout
 
 ```
-BackupBench.ps1    Main menu
+BackupTool.ps1     Main menu
 run.bat            Elevated launcher
 lib/
   Common.ps1       Shared path prompt

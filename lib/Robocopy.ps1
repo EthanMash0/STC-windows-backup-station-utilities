@@ -127,7 +127,7 @@ function Get-RobocopyEstimate {
 	return [pscustomobject]@{
 		TotalBytes = $totalBytes
 		TotalFiles = $totalFiles
-		TotalMB = [Math]::Round($totalBytes / 1MB, 2)
+		TotalSize = Format-ByteSize $totalBytes
 	}
 }
 
@@ -139,7 +139,8 @@ function Write-RobocopySummary {
 		[datetime]$End,
 		[int]$ExitCode,
 		[string]$TimeLog,
-		[string]$Log
+		[string]$Log,
+		$Estimate
 	)
 
 	$duration = $End - $Start
@@ -152,6 +153,8 @@ function Write-RobocopySummary {
 @"
 Source:      $Source
 Destination: $Dest
+Size:        $($Estimate.TotalSize)
+Files:       $($Estimate.TotalFiles)
 Start:       $Start
 End:         $End
 Duration:    $duration
@@ -206,7 +209,6 @@ function New-ProgressLayout {
 		FilesStr = " Files: "
 		PathStr = " Path: "
 		SepStr = " / "
-		DataUnitStr = " MB"
 	} -PassThru
 }
 
@@ -273,14 +275,13 @@ function New-OverallProgressBox {
 		$Layout,
 		$Estimate,
 		[long]$CurrentBytes,
-		[double]$CurrentMB,
 		[long]$CurrentFiles
 	)
 
 	$dataPercent = Get-ClampedPercent -Current $CurrentBytes -Total $Estimate.TotalBytes
 	$filesPercent = Get-ClampedPercent -Current $CurrentFiles -Total $Estimate.TotalFiles
 
-	$overallData = $Layout.DataStr + $CurrentMB + $Layout.SepStr + $Estimate.TotalMB + $Layout.DataUnitStr
+	$overallData = $Layout.DataStr + (Format-ByteSize $CurrentBytes) + $Layout.SepStr + $Estimate.TotalSize
 	$dataProgressBar = New-ProgressBar -Percent $dataPercent -BarWidth $Layout.BarWidth
 
 	$overallFiles = $Layout.FilesStr + $CurrentFiles + $Layout.SepStr + $Estimate.TotalFiles
@@ -301,7 +302,7 @@ function New-ItemProgressBox {
 	param(
 		$Layout,
 		[string]$FileName,
-		[double]$ItemMB,
+		[long]$ItemBytes,
 		[double]$ItemPercent
 	)
 
@@ -311,8 +312,8 @@ function New-ItemProgressBox {
 	}
 
 	$itemPath = $Layout.PathStr + $FileName
-	$currentItemMB = [Math]::Round(($ItemPercent / 100) * $ItemMB, 2)
-	$itemData = $Layout.DataStr + $currentItemMB + $Layout.SepStr + $ItemMB + $Layout.DataUnitStr
+	$currentItemBytes = ($ItemPercent / 100) * $ItemBytes
+	$itemData = $Layout.DataStr + (Format-ByteSize $currentItemBytes) + $Layout.SepStr + (Format-ByteSize $ItemBytes)
 	$itemProgressBar = New-ProgressBar -Percent $ItemPercent -BarWidth $Layout.BarWidth
 
 	return Format-Box -Layout $Layout -Title $Layout.ItemStr -Rows @(
@@ -330,7 +331,6 @@ function Complete-CopyProgress {
 		$Layout,
 		$Estimate,
 		[long]$CurrentBytes,
-		[double]$CurrentMB,
 		[long]$CurrentFiles,
 		[int]$ProgressTop,
 		[int]$OverallProgressEnd,
@@ -343,7 +343,6 @@ function Complete-CopyProgress {
 			-Layout $Layout `
 			-Estimate $Estimate `
 			-CurrentBytes $CurrentBytes `
-			-CurrentMB $CurrentMB `
 			-CurrentFiles $CurrentFiles
 
 		$progressEnds = Write-CopyProgress -OverallLines $overallStatus -CursorTop $ProgressTop
@@ -389,7 +388,6 @@ function Invoke-RobocopyTool {
 	$estimate = Get-RobocopyEstimate -Source $copyPaths.Source -Dest $copyPaths.Dest
 
 	$currentBytes = 0
-	$currentMB = 0
 	$currentFiles = 0
 
 	$layout = New-ProgressLayout
@@ -424,7 +422,6 @@ function Invoke-RobocopyTool {
 				$makeProgress = $true
 
 				$itemBytes = $parsed.ItemBytes
-				$itemMB = [Math]::Round($itemBytes / 1MB, 2)
 				$fileName = $parsed.FileName
 				$itemPercent = 0
 			}
@@ -445,13 +442,12 @@ function Invoke-RobocopyTool {
 					-Layout $layout `
 					-Estimate $estimate `
 					-CurrentBytes $currentBytes `
-					-CurrentMB $currentMB `
 					-CurrentFiles $currentFiles
 
 				$itemStatus = New-ItemProgressBox `
 					-Layout $layout `
 					-FileName $fileName `
-					-ItemMB $itemMB `
+					-ItemBytes $itemBytes `
 					-ItemPercent $itemPercent
 
 				$progressEnds = Write-CopyProgress -OverallLines $overallStatus -ItemLines $itemStatus -CursorTop $progressTop
@@ -461,7 +457,6 @@ function Invoke-RobocopyTool {
 
 			if ($newItem -eq $true) {
 				$currentBytes += $itemBytes
-				$currentMB = [Math]::Round($currentBytes / 1MB, 2)
 				$currentFiles += 1
 			}
 		}
@@ -471,7 +466,6 @@ function Invoke-RobocopyTool {
 			-Layout $layout `
 			-Estimate $estimate `
 			-CurrentBytes $currentBytes `
-			-CurrentMB $currentMB `
 			-CurrentFiles $currentFiles `
 			-ProgressTop $progressTop `
 			-OverallProgressEnd $overallProgressEnd `
@@ -490,5 +484,6 @@ function Invoke-RobocopyTool {
 		-End $end `
 		-ExitCode $exitCode `
 		-TimeLog $logPaths.TimeLog `
-		-Log $logPaths.Log
+		-Log $logPaths.Log `
+		-Estimate $estimate
 }

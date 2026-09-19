@@ -56,7 +56,7 @@ function Invoke-FolderSizeTool {
 		Write-Host ""
 		Write-Host "Done."
 		Write-Host "-------------------"
-		Write-Host ("Total size: {0:N2} GB ({1:N0} bytes)" -f ($bytes / 1GB), $bytes)
+		Write-Host ("Total size: {0} ({1:N0} bytes)" -f (Format-ByteSize $bytes), $bytes)
 		Write-Host ("Files:      {0:N0}" -f $files)
 		Write-Host ("Folders:    {0:N0}" -f $folders)
 	}

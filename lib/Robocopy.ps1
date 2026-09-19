@@ -19,29 +19,12 @@ $script:RobocopyCopyFlags = @(
 # =============================================================================
 
 function Read-RobocopyThreadCount {
-	Clear-Host
-	Write-Host ""
-	Write-Host "Copy Tool (Robocopy based)"
-	Write-Host "--------------------------"
-	Write-Host "Options:"
-	Write-Host ""
-	Write-Host "1. Slow (1 Thread)"
-	Write-Host "   * 1 copy thread, or 1 file at a time" -ForegroundColor Gray
-	Write-Host "2. Standard (16 Threads)"
-	Write-Host "   * 16 copy threads, or up to 16 files at a time" -ForegroundColor Gray
-	Write-Host "3. Fast (64 Threads)"
-	Write-Host "   * 64 copy threads, or up to 64 files at a time" -ForegroundColor Gray
-	Write-Host "4. Back"
-	Write-Host ""
-
-	do {
-		$choice = Read-Host "Enter choice (1-4)"
-		$choice = $choice.Trim().Trim('"')
-
-		if ($choice -notin '1', '2', '3', '4') {
-			Write-Host "Invalid choice. Enter a number in the range 1-4."
-		}
-	} while ($choice -notin '1', '2', '3', '4')
+	$choice = Read-MenuChoice -Title 'Copy Tool (Robocopy based)' -Options @(
+		@{ Key = '1'; Label = 'Slow (1 Thread)'; Description = '1 copy thread, or 1 file at a time' }
+		@{ Key = '2'; Label = 'Standard (16 Threads)'; Description = '16 copy threads, or up to 16 files at a time' }
+		@{ Key = '3'; Label = 'Fast (64 Threads)'; Description = '64 copy threads, or up to 64 files at a time' }
+		@{ Key = '4'; Label = 'Back' }
+	)
 
 	switch ($choice) {
 		'1' {
@@ -214,17 +197,9 @@ function New-ProgressBar {
 }
 
 function New-ProgressLayout {
-	$barWidth = 40
-	$consoleWidth = [Console]::WindowWidth - 1
-	$innerWidth = $consoleWidth - 2
-
-	$borderFill = [String]::new('─', $innerWidth)
-	$emptyFill = [String]::new(' ', $innerWidth)
-
-	return [pscustomobject]@{
-		BarWidth = $barWidth
-		ConsoleWidth = $consoleWidth
-		InnerWidth = $innerWidth
+	$layout = New-BoxLayout
+	$layout | Add-Member -NotePropertyMembers @{
+		BarWidth = 40
 		OverallStr = " Overall Progress"
 		ItemStr = " Current File"
 		DataStr = " Data: "
@@ -232,42 +207,7 @@ function New-ProgressLayout {
 		PathStr = " Path: "
 		SepStr = " / "
 		DataUnitStr = " MB"
-		Top = "┌" + $borderFill + "┐"
-		Bottom = "└" + $borderFill + "┘"
-		Cross = "├" + $borderFill + "┤"
-		Middle = "│" + $emptyFill + "│"
-	}
-}
-
-function Format-ProgressBox {
-	param(
-		$Layout,
-		[string]$Title,
-		[string[]]$Rows,
-		[switch]$TrailingBlank
-	)
-
-	$box = @(
-		$Layout.Top
-		"│" + $Title.PadRight($Layout.InnerWidth) + "│"
-		$Layout.Cross
-	)
-
-	foreach ($row in $Rows) {
-		if ([string]::IsNullOrEmpty($row)) {
-			$box += $Layout.Middle
-		} else {
-			$box += "│" + $row.PadRight($Layout.InnerWidth) + "│"
-		}
-	}
-
-	$box += $Layout.Bottom
-
-	if ($TrailingBlank) {
-		$box += ""
-	}
-
-	return $box
+	} -PassThru
 }
 
 function Write-CopyProgress {
@@ -346,7 +286,7 @@ function New-OverallProgressBox {
 	$overallFiles = $Layout.FilesStr + $CurrentFiles + $Layout.SepStr + $Estimate.TotalFiles
 	$filesProgressBar = New-ProgressBar -Percent $filesPercent -BarWidth $Layout.BarWidth
 
-	return Format-ProgressBox -Layout $Layout -Title $Layout.OverallStr -TrailingBlank -Rows @(
+	return Format-Box -Layout $Layout -Title $Layout.OverallStr -TrailingBlank -Rows @(
 		''
 		$overallData
 		$dataProgressBar
@@ -375,7 +315,7 @@ function New-ItemProgressBox {
 	$itemData = $Layout.DataStr + $currentItemMB + $Layout.SepStr + $ItemMB + $Layout.DataUnitStr
 	$itemProgressBar = New-ProgressBar -Percent $ItemPercent -BarWidth $Layout.BarWidth
 
-	return Format-ProgressBox -Layout $Layout -Title $Layout.ItemStr -Rows @(
+	return Format-Box -Layout $Layout -Title $Layout.ItemStr -Rows @(
 		''
 		$itemPath
 		''

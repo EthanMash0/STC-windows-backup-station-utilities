@@ -24,27 +24,13 @@ catch {
 	# Some hosts (ISE, remoting) do not allow console resize.
 }
 
-Clear-Host
-Write-Host ""
-Write-Host "STC Windows Backup Station Tool"
-Write-Host "-------------------------------"
-Write-Host "Options:"
-Write-Host ""
-Write-Host "1. Copy Data"
-Write-Host ""
-Write-Host "2. Folder Size"
-Write-Host ""
-Write-Host "3. Exit"
-Write-Host ""
+. "$PSScriptRoot\lib\Common.ps1"
 
-do {
-	$choice = Read-Host "Enter choice (1-3)"
-	$choice = $choice.Trim().Trim('"')
-
-	if ($choice -notin '1', '2', '3') {
-		Write-Host "Invalid choice. Enter a number in the range 1-3."
-	}
-} while ($choice -notin '1', '2', '3')
+$choice = Read-MenuChoice -Title 'STC Windows Backup Station' -Options @(
+	@{ Key = '1'; Label = 'Copy Data'; Description = 'Robocopy with Slow / Standard / Fast' }
+	@{ Key = '2'; Label = 'Folder Size' }
+	@{ Key = '3'; Label = 'Exit' }
+)
 
 switch ($choice) {
 	'1' {

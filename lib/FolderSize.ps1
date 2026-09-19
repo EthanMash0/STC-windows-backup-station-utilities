@@ -1,8 +1,3 @@
-$LibRoot = $PSScriptRoot
-
-# import
-. "$LibRoot\Common.ps1"
-
 function Invoke-FolderSizeTool {
 	Clear-Host
 
@@ -28,8 +23,7 @@ function Invoke-FolderSizeTool {
 	}
 
 	Clear-Host
-	Write-Host ""
-	Write-UiText -Text "Scanning:" -Style Progress
+	Show-Header -Title "Scanning:" -Style Progress
 	Write-Host $path
 	Write-Host ""
 
@@ -48,16 +42,17 @@ function Invoke-FolderSizeTool {
 			}
 		}
 
+		Write-Success "Done."
 		Write-Host ""
-		Write-UiText -Text "Done." -Style Success
-		Write-Host ("Total size: {0} ({1:N0} bytes)" -f (Format-ByteSize $bytes), $bytes)
-		Write-Host ("Files:      {0:N0}" -f $files)
-		Write-Host ("Folders:    {0:N0}" -f $folders)
+		Show-InfoBox -Title "Folder Size" -Rows @(
+			("  Total size: {0} ({1:N0} bytes)" -f (Format-ByteSize $bytes), $bytes)
+			("  Files:      {0:N0}" -f $files)
+			("  Folders:    {0:N0}" -f $folders)
+		)
 	}
 	catch {
-		Write-Host ""
-		Write-UiText -Text "Fatal error:" -Style Error
-		Write-UiText -Text $_.Exception.Message -Style Error
+		Write-ErrorMessage "Fatal error:"
+		Write-ErrorMessage $_.Exception.Message
 	}
 
 	Write-Host ""

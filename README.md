@@ -67,6 +67,7 @@ D:\Users\STC
 BackupTool.ps1     Main menu
 run.bat            Elevated launcher
 lib/
+  Ui.ps1           Shared headers, boxes, menus, colors
   Common.ps1       Shared path prompt
   Robocopy.ps1     Copy tool
   FolderSize.ps1   Folder size tool

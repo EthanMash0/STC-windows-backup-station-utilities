@@ -29,6 +29,7 @@ catch {
 	# Some hosts (ISE, remoting) do not allow console resize or color changes.
 }
 
+. "$PSScriptRoot\lib\Ui.ps1"
 . "$PSScriptRoot\lib\Common.ps1"
 
 while ($true) {

@@ -1,9 +1,4 @@
-﻿$LibRoot = $PSScriptRoot
-
-# import
-. "$LibRoot\Common.ps1"
-
-# copy policy
+﻿# copy policy
 $script:RobocopyCopyFlags = @(
 	'/E',
 	'/COPY:DAT',
@@ -175,23 +170,21 @@ Status:      $status
 		@{ Label = 'Status:      '; Value = $status; Style = $statusStyle }
 	)
 
-	Write-Host ""
-	foreach ($field in $fields) {
-		Write-Host $field.Label -NoNewline
-		if ($field.Style) {
-			Write-UiText -Text "$($field.Value)" -Style $field.Style
+	if (-not $succeeded) {
+		$fields += @{ Label = 'Log:         '; Value = $Log }
+	}
+
+	$rows = foreach ($field in $fields) {
+		$value = if ($field.Style) {
+			Format-UiText -Text "$($field.Value)" -Style $field.Style
 		} else {
-			Write-Host $field.Value
+			"$($field.Value)"
 		}
+		"  $($field.Label)$value"
 	}
 
 	Write-Host ""
-	if ($succeeded) {
-		Write-UiText -Text "Robocopy completed without fatal failure." -Style Success
-	} else {
-		Write-UiText -Text "Robocopy failed. Check $Log" -Style Error
-	}
-	Write-Host ""
+	Show-InfoBox -Title "Copy Summary" -Rows $rows
 }
 
 function Get-ClampedPercent {
@@ -400,8 +393,7 @@ function Complete-CopyProgress {
 
 	[Console]::SetCursorPosition(0, $OverallProgressEnd)
 	[Console]::CursorVisible = $true
-	Write-UiText -Text "Backup Complete!" -Style Success
-	Write-Host ""
+	Write-Success "Backup Complete!"
 }
 
 # =============================================================================
@@ -424,9 +416,10 @@ function Invoke-RobocopyTool {
 	# echo paths back to user
 	Clear-Host
 	Write-Host ""
-	Write-UiText -Text "Copying:" -Style Header
-	Write-Host "  Source:      $($copyPaths.Source)"
-	Write-Host "  Destination: $($copyPaths.Dest)"
+	Show-InfoBox -Title "Copying" -Rows @(
+		"  Source:      $($copyPaths.Source)"
+		"  Destination: $($copyPaths.Dest)"
+	)
 	Write-Host ""
 
 	$estimate = Get-RobocopyEstimate -Source $copyPaths.Source -Dest $copyPaths.Dest

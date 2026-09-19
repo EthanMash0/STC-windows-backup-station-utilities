@@ -9,13 +9,8 @@ function Invoke-FolderSizeTool {
 	$title = "Folder Size Counter"
 	Show-PathHelp -Title $title
 
-	$inputPath = Read-Host "Path"
-
-	# Remove surrounding quotes if the user entered a quoted path
-	$inputPath = $inputPath.Trim().Trim('"')
-
-	if ([string]::IsNullOrWhiteSpace($inputPath)) {
-		Write-UiText -Text "No path entered." -Style Error
+	$inputPath = Read-FolderPath -Prompt 'Path' -MustExist
+	if ($null -eq $inputPath) {
 		return
 	}
 

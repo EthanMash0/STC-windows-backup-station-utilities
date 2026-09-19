@@ -121,6 +121,80 @@ function Show-PathHelp {
 	Write-Host ""
 }
 
+function Test-FolderPath {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string]$Path,
+
+		[switch]$MustExist
+	)
+
+	if (Test-Path -LiteralPath $Path -PathType Container) {
+		return $true
+	}
+
+	if ($MustExist) {
+		return $false
+	}
+
+	# Destination may not exist yet. Accept it when an ancestor folder exists
+	# so Robocopy can create the final directory.
+	if (Test-Path -LiteralPath $Path) {
+		return $false
+	}
+
+	# Split-Path -LiteralPath -Parent is not valid in Windows PowerShell 5.1.
+	$parent = [System.IO.Path]::GetDirectoryName($Path)
+	while (-not [string]::IsNullOrWhiteSpace($parent)) {
+		if (Test-Path -LiteralPath $parent -PathType Container) {
+			return $true
+		}
+
+		if (Test-Path -LiteralPath $parent) {
+			return $false
+		}
+
+		$next = [System.IO.Path]::GetDirectoryName($parent)
+		if ([string]::IsNullOrWhiteSpace($next) -or $next -eq $parent) {
+			break
+		}
+
+		$parent = $next
+	}
+
+	return $false
+}
+
+function Read-FolderPath {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string]$Prompt,
+
+		[switch]$MustExist
+	)
+
+	$value = Read-Host $Prompt
+	$value = $value.Trim().Trim('"').TrimEnd('\')
+
+	if ([string]::IsNullOrWhiteSpace($value)) {
+		Write-UiText -Text "No $($Prompt.ToLower()) entered." -Style Error
+		return $null
+	}
+
+	if (Test-FolderPath -Path $value -MustExist:$MustExist) {
+		return $value
+	}
+
+	if ($MustExist) {
+		Write-UiText -Text "$Prompt folder does not exist." -Style Error
+	} else {
+		Write-UiText -Text "$Prompt folder does not exist and cannot be created." -Style Error
+	}
+
+	Write-Host $value
+	return $null
+}
+
 function New-BoxLayout {
 	# Code points so Windows PowerShell 5.1 can parse this file without a UTF-8 BOM.
 	$boxH = [char]0x2500

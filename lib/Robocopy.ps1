@@ -72,28 +72,13 @@ function Read-CopyPaths {
 	Clear-Host
 	Show-PathHelp -Title $Title
 
-	$source = Read-Host "Source"
-	$source = $source.Trim().Trim('"').TrimEnd('\')
-
-	if ([string]::IsNullOrWhiteSpace($source)) {
-		Write-UiText -Text "No source entered." -Style Error
+	$source = Read-FolderPath -Prompt 'Source' -MustExist
+	if ($null -eq $source) {
 		return $null
 	}
 
-	if (-not (Test-Path -LiteralPath $source -PathType Container)) {
-		Write-UiText -Text "Source folder does not exist." -Style Error
-		Write-Host $source
-		return $null
-	}
-
-	# Write-Host ""
-	# Show-PathHelp
-
-	$dest = Read-Host "Destination"
-	$dest = $dest.Trim().Trim('"')
-
-	if ([string]::IsNullOrWhiteSpace($dest)) {
-		Write-UiText -Text "No destination entered." -Style Error
+	$dest = Read-FolderPath -Prompt 'Destination'
+	if ($null -eq $dest) {
 		return $null
 	}
 

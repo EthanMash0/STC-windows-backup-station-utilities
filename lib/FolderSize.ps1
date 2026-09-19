@@ -15,8 +15,7 @@ function Invoke-FolderSizeTool {
 	$inputPath = $inputPath.Trim().Trim('"')
 
 	if ([string]::IsNullOrWhiteSpace($inputPath)) {
-		Write-Host "No path entered. Exiting."
-		Pause
+		Write-UiText -Text "No path entered." -Style Error
 		return
 	}
 
@@ -33,8 +32,9 @@ function Invoke-FolderSizeTool {
 		$path = "\\?\" + $inputPath
 	}
 
+	Clear-Host
 	Write-Host ""
-	Write-Host "Scanning:"
+	Write-UiText -Text "Scanning:" -Style Progress
 	Write-Host $path
 	Write-Host ""
 
@@ -54,16 +54,15 @@ function Invoke-FolderSizeTool {
 		}
 
 		Write-Host ""
-		Write-Host "Done."
-		Write-Host "-------------------"
+		Write-UiText -Text "Done." -Style Success
 		Write-Host ("Total size: {0} ({1:N0} bytes)" -f (Format-ByteSize $bytes), $bytes)
 		Write-Host ("Files:      {0:N0}" -f $files)
 		Write-Host ("Folders:    {0:N0}" -f $folders)
 	}
 	catch {
 		Write-Host ""
-		Write-Host "Fatal error:"
-		Write-Host $_.Exception.Message
+		Write-UiText -Text "Fatal error:" -Style Error
+		Write-UiText -Text $_.Exception.Message -Style Error
 	}
 
 	Write-Host ""

@@ -1,15 +1,122 @@
+function Enable-VirtualTerminal {
+	try {
+		if (-not ([System.Management.Automation.PSTypeName]'Win32.VtConsole').Type) {
+			$signature = @'
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern IntPtr GetStdHandle(int nStdHandle);
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool GetConsoleMode(IntPtr hConsoleHandle, out uint lpMode);
+[DllImport("kernel32.dll", SetLastError = true)]
+public static extern bool SetConsoleMode(IntPtr hConsoleHandle, uint dwMode);
+'@
+			Add-Type -MemberDefinition $signature -Name VtConsole -Namespace Win32 -ErrorAction Stop
+		}
+
+		$handle = [Win32.VtConsole]::GetStdHandle(-11)
+		if ($handle -eq [IntPtr]::Zero -or $handle.ToInt64() -eq -1) {
+			return $false
+		}
+
+		[uint32]$mode = 0
+		if (-not [Win32.VtConsole]::GetConsoleMode($handle, [ref]$mode)) {
+			return $false
+		}
+
+		$enableVt = [uint32]4
+		if (($mode -band $enableVt) -ne $enableVt) {
+			if (-not [Win32.VtConsole]::SetConsoleMode($handle, ($mode -bor $enableVt))) {
+				return $false
+			}
+		}
+
+		return $true
+	}
+	catch {
+		return $false
+	}
+}
+
+function Initialize-Ui {
+	if ($global:StcUi -and $global:StcUi.Initialized) {
+		return
+	}
+
+	$global:StcUi = @{
+		Initialized = $true
+		UseVt = Enable-VirtualTerminal
+		Esc = [char]27
+		Theme = @{
+			Header = @(126, 182, 255)
+			Secondary = @(154, 154, 154)
+			Success = @(111, 207, 151)
+			Error = @(255, 107, 107)
+			Progress = @(230, 180, 80)
+		}
+		Fallback = @{
+			Header = $null
+			Secondary = 'DarkGray'
+			Success = 'Green'
+			Error = 'Red'
+			Progress = 'Yellow'
+		}
+	}
+}
+
+function Write-UiText {
+	param(
+		[Parameter(Mandatory = $true)]
+		[AllowEmptyString()]
+		[string]$Text,
+
+		[Parameter(Mandatory = $true)]
+		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress')]
+		[string]$Style,
+
+		[switch]$NoNewline
+	)
+
+	Initialize-Ui
+
+	if ($global:StcUi.UseVt) {
+		$rgb = $global:StcUi.Theme[$Style]
+		$esc = $global:StcUi.Esc
+		$line = "$esc[38;2;$($rgb[0]);$($rgb[1]);$($rgb[2])m$Text$esc[0m"
+		if ($NoNewline) {
+			Write-Host $line -NoNewline
+		} else {
+			Write-Host $line
+		}
+		return
+	}
+
+	$color = $global:StcUi.Fallback[$Style]
+	if ($color) {
+		if ($NoNewline) {
+			Write-Host $Text -NoNewline -ForegroundColor $color
+		} else {
+			Write-Host $Text -ForegroundColor $color
+		}
+	}
+	elseif ($NoNewline) {
+		Write-Host $Text -NoNewline
+	}
+	else {
+		Write-Host $Text
+	}
+}
+
 function Show-PathHelp {
 	param(
 		[string]$Title
 	)
 
 	Write-Host ""
-	Write-Host $Title
-	Write-Host ("-" * $Title.Length)
-	Write-Host "Enter a local path like:"
+	Write-UiText -Text $Title -Style Header
+	Write-UiText -Text ("-" * $Title.Length) -Style Header
+	Write-UiText -Text "Enter a local path like:" -Style Secondary
 	Write-Host "  D:\Users\STC"
 	Write-Host ""
-	Write-Host "Or a network path like:"
+	Write-UiText -Text "Or a network path like:" -Style Secondary
 	Write-Host "  \\server\share\folder"
 	Write-Host ""
 }
@@ -73,6 +180,25 @@ function Format-Box {
 	return $box
 }
 
+function Write-BoxLine {
+	param(
+		$Layout,
+		[string]$Text,
+		[string]$Style
+	)
+
+	Write-Host $Layout.Bar -NoNewline
+
+	$padded = $Text.PadRight($Layout.InnerWidth)
+	if (-not [string]::IsNullOrWhiteSpace($Style)) {
+		Write-UiText -Text $padded -Style $Style -NoNewline
+	} else {
+		Write-Host $padded -NoNewline
+	}
+
+	Write-Host $Layout.Bar
+}
+
 function Format-ByteSize {
 	param(
 		[Parameter(Mandatory = $true)]
@@ -109,21 +235,22 @@ function Read-MenuChoice {
 		$Prompt = "Enter choice ($($keys[0])-$($keys[-1]))"
 	}
 
-	$rows = foreach ($option in $Options) {
-		"  [$($option.Key)]  $($option.Label)"
-		if (-not [string]::IsNullOrWhiteSpace($option.Description)) {
-			"       $($option.Description)"
-		}
-	}
-
 	$layout = New-BoxLayout
-	$box = Format-Box -Layout $layout -Title "  $Title" -Rows $rows
 
 	Clear-Host
 	Write-Host ""
-	foreach ($line in $box) {
-		Write-Host $line
+	Write-Host $layout.Top
+	Write-BoxLine -Layout $layout -Text "  $Title" -Style Header
+	Write-Host $layout.Cross
+
+	foreach ($option in $Options) {
+		Write-BoxLine -Layout $layout -Text "  [$($option.Key)]  $($option.Label)"
+		if (-not [string]::IsNullOrWhiteSpace($option.Description)) {
+			Write-BoxLine -Layout $layout -Text "       $($option.Description)" -Style Secondary
+		}
 	}
+
+	Write-Host $layout.Bottom
 	Write-Host ""
 
 	do {
@@ -131,9 +258,11 @@ function Read-MenuChoice {
 		$choice = $choice.Trim().Trim('"')
 
 		if ($choice -notin $keys) {
-			Write-Host "Invalid choice. Enter a number in the range $($keys[0])-$($keys[-1])."
+			Write-UiText -Text "Invalid choice. Enter a number in the range $($keys[0])-$($keys[-1])." -Style Error
 		}
 	} while ($choice -notin $keys)
 
 	return $choice
 }
+
+Initialize-Ui

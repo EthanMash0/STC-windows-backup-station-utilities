@@ -37,7 +37,7 @@ function Read-RobocopyThreadCount {
 			return 64
 		}
 		'4' {
-			Write-Host "Exiting."
+			Write-UiText -Text "Back." -Style Secondary
 			return $null
 		}
 	}
@@ -69,21 +69,20 @@ function Read-CopyPaths {
 		[string]$Title
 	)
 
+	Clear-Host
 	Show-PathHelp -Title $Title
 
 	$source = Read-Host "Source"
 	$source = $source.Trim().Trim('"').TrimEnd('\')
 
 	if ([string]::IsNullOrWhiteSpace($source)) {
-		Write-Host "No source entered. Exiting."
-		Pause
+		Write-UiText -Text "No source entered." -Style Error
 		return $null
 	}
 
 	if (-not (Test-Path -LiteralPath $source -PathType Container)) {
-		Write-Host "Source folder does not exist. Exiting."
+		Write-UiText -Text "Source folder does not exist." -Style Error
 		Write-Host $source
-		Pause
 		return $null
 	}
 
@@ -94,8 +93,7 @@ function Read-CopyPaths {
 	$dest = $dest.Trim().Trim('"')
 
 	if ([string]::IsNullOrWhiteSpace($dest)) {
-		Write-Host "No destination entered. Exiting."
-		Pause
+		Write-UiText -Text "No destination entered." -Style Error
 		return $null
 	}
 
@@ -144,13 +142,15 @@ function Write-RobocopySummary {
 	)
 
 	$duration = $End - $Start
-	$status = if ($ExitCode -le 7) {
+	$succeeded = $ExitCode -le 7
+	$status = if ($succeeded) {
 		"Completed without fatal failure"
 	} else {
 		"Failed"
 	}
+	$statusStyle = if ($succeeded) { 'Success' } else { 'Error' }
 
-@"
+	$summary = @"
 Source:      $Source
 Destination: $Dest
 Size:        $($Estimate.TotalSize)
@@ -162,13 +162,38 @@ Seconds:     $([math]::Round($duration.TotalSeconds, 2))
 Minutes:     $([math]::Round($duration.TotalMinutes, 2))
 ExitCode:    $ExitCode
 Status:      $status
-"@ | Tee-Object -FilePath $TimeLog
+"@
+	$summary | Tee-Object -FilePath $TimeLog | Out-Null
+
+	$fields = @(
+		@{ Label = 'Source:      '; Value = $Source }
+		@{ Label = 'Destination: '; Value = $Dest }
+		@{ Label = 'Size:        '; Value = $Estimate.TotalSize }
+		@{ Label = 'Files:       '; Value = $Estimate.TotalFiles }
+		@{ Label = 'Start:       '; Value = $Start }
+		@{ Label = 'End:         '; Value = $End }
+		@{ Label = 'Duration:    '; Value = $duration }
+		@{ Label = 'Seconds:     '; Value = [math]::Round($duration.TotalSeconds, 2) }
+		@{ Label = 'Minutes:     '; Value = [math]::Round($duration.TotalMinutes, 2) }
+		@{ Label = 'ExitCode:    '; Value = $ExitCode }
+		@{ Label = 'Status:      '; Value = $status; Style = $statusStyle }
+	)
 
 	Write-Host ""
-	if ($ExitCode -le 7) {
-		Write-Host "Robocopy completed without fatal failure."
+	foreach ($field in $fields) {
+		Write-Host $field.Label -NoNewline
+		if ($field.Style) {
+			Write-UiText -Text "$($field.Value)" -Style $field.Style
+		} else {
+			Write-Host $field.Value
+		}
+	}
+
+	Write-Host ""
+	if ($succeeded) {
+		Write-UiText -Text "Robocopy completed without fatal failure." -Style Success
 	} else {
-		Write-Host "Robocopy failed. Check $Log"
+		Write-UiText -Text "Robocopy failed. Check $Log" -Style Error
 	}
 	Write-Host ""
 }
@@ -357,7 +382,7 @@ function Complete-CopyProgress {
 
 	[Console]::SetCursorPosition(0, $OverallProgressEnd)
 	[Console]::CursorVisible = $true
-	Write-Host "Backup Complete!"
+	Write-UiText -Text "Backup Complete!" -Style Success
 	Write-Host ""
 }
 
@@ -379,8 +404,9 @@ function Invoke-RobocopyTool {
 	}
 
 	# echo paths back to user
+	Clear-Host
 	Write-Host ""
-	Write-Host "Copying:"
+	Write-UiText -Text "Copying:" -Style Header
 	Write-Host "  Source:      $($copyPaths.Source)"
 	Write-Host "  Destination: $($copyPaths.Dest)"
 	Write-Host ""
@@ -396,7 +422,7 @@ function Invoke-RobocopyTool {
 	$makeProgress = $false
 	$initiated = $false
 
-	Write-Host "Making Backup..."
+	Write-UiText -Text "Making Backup..." -Style Progress
 	Write-Host ""
 
 	$progressTop = [Console]::CursorTop

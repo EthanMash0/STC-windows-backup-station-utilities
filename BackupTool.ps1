@@ -1,3 +1,29 @@
+$Host.UI.RawUI.WindowTitle = 'STC Backup Station'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
+$minWidth = 80
+try {
+	$maxWidth = $Host.UI.RawUI.MaxPhysicalWindowSize.Width
+	if ($maxWidth -gt 0 -and $minWidth -gt $maxWidth) {
+		$minWidth = $maxWidth
+	}
+
+	$buffer = $Host.UI.RawUI.BufferSize
+	if ($buffer.Width -lt $minWidth) {
+		$buffer.Width = $minWidth
+		$Host.UI.RawUI.BufferSize = $buffer
+	}
+
+	$window = $Host.UI.RawUI.WindowSize
+	if ($window.Width -lt $minWidth) {
+		$window.Width = $minWidth
+		$Host.UI.RawUI.WindowSize = $window
+	}
+}
+catch {
+	# Some hosts (ISE, remoting) do not allow console resize.
+}
+
 Clear-Host
 Write-Host ""
 Write-Host "STC Windows Backup Station Tool"

@@ -48,7 +48,7 @@ function Initialize-Ui {
 		Theme = @{
 			Header = @(126, 182, 255)
 			Secondary = @(154, 154, 154)
-			Success = @(111, 207, 151)
+			Success = @(110, 170, 88)
 			Error = @(255, 107, 107)
 			Progress = @(230, 180, 80)
 		}
@@ -60,6 +60,44 @@ function Initialize-Ui {
 			Progress = 'Yellow'
 		}
 	}
+}
+
+function Format-UiText {
+	param(
+		[Parameter(Mandatory = $true)]
+		[AllowEmptyString()]
+		[string]$Text,
+
+		[Parameter(Mandatory = $true)]
+		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress')]
+		[string]$Style
+	)
+
+	Initialize-Ui
+
+	if (-not $global:StcUi.UseVt) {
+		return $Text
+	}
+
+	$rgb = $global:StcUi.Theme[$Style]
+	$esc = $global:StcUi.Esc
+	# Keep black behind the text. SGR 0 resets to the console default, which
+	# is dark blue in powershell.exe — not the Black we set on RawUI.
+	return "$esc[38;2;$($rgb[0]);$($rgb[1]);$($rgb[2])m$esc[48;2;0;0;0m$Text$esc[38;2;255;255;255m$esc[48;2;0;0;0m"
+}
+
+function Get-VisibleTextLength {
+	param(
+		[AllowEmptyString()]
+		[string]$Text
+	)
+
+	if ([string]::IsNullOrEmpty($Text)) {
+		return 0
+	}
+
+	# Strip CSI color/style sequences so padding matches what the console draws.
+	return [regex]::Replace($Text, '\x1b\[[0-9;]*m', '').Length
 }
 
 function Write-UiText {
@@ -78,9 +116,7 @@ function Write-UiText {
 	Initialize-Ui
 
 	if ($global:StcUi.UseVt) {
-		$rgb = $global:StcUi.Theme[$Style]
-		$esc = $global:StcUi.Esc
-		$line = "$esc[38;2;$($rgb[0]);$($rgb[1]);$($rgb[2])m$Text$esc[0m"
+		$line = Format-UiText -Text $Text -Style $Style
 		if ($NoNewline) {
 			Write-Host $line -NoNewline
 		} else {
@@ -241,7 +277,8 @@ function Format-Box {
 		if ([string]::IsNullOrEmpty($row)) {
 			$box += $Layout.Middle
 		} else {
-			$box += $Layout.Bar + $row.PadRight($Layout.InnerWidth) + $Layout.Bar
+			$pad = [Math]::Max(0, $Layout.InnerWidth - (Get-VisibleTextLength $row))
+			$box += $Layout.Bar + $row + [String]::new(' ', $pad) + $Layout.Bar
 		}
 	}
 

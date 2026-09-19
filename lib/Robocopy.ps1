@@ -160,7 +160,7 @@ Status:      $status
 		@{ Label = 'Duration:    '; Value = $duration }
 		@{ Label = 'Seconds:     '; Value = [math]::Round($duration.TotalSeconds, 2) }
 		@{ Label = 'Minutes:     '; Value = [math]::Round($duration.TotalMinutes, 2) }
-		@{ Label = 'ExitCode:    '; Value = $ExitCode }
+		@{ Label = 'ExitCode:    '; Value = $ExitCode; Style = $statusStyle }
 		@{ Label = 'Status:      '; Value = $status; Style = $statusStyle }
 	)
 
@@ -201,18 +201,39 @@ function New-ProgressBar {
 		[double]$Percent,
 		[int]$BarWidth
 	)
-	$fillLen = [Math]::Round(($Percent / 100) * $BarWidth)
+
+	$fillLen = [int][Math]::Round(($Percent / 100) * $BarWidth)
+	if ($fillLen -lt 0) {
+		$fillLen = 0
+	}
+	elseif ($fillLen -gt $BarWidth) {
+		$fillLen = $BarWidth
+	}
+
 	$emptyLen = $BarWidth - $fillLen
-	$fillStr = [String]::new('=', $fillLen)
-	$emptyStr = [String]::new(' ', $emptyLen)
+
+	# Block fill + box horizontal empty, via code points so Windows PowerShell 5.1
+	# can parse this file without a UTF-8 BOM.
+	$fillChar = [char]0x2588
+	$emptyChar = [char]0x2500
+	$fillStr = [String]::new($fillChar, $fillLen)
+	$emptyStr = [String]::new($emptyChar, $emptyLen)
+
+	if ($fillLen -gt 0) {
+		$fillStr = Format-UiText -Text $fillStr -Style Success
+	}
+	if ($emptyLen -gt 0) {
+		$emptyStr = Format-UiText -Text $emptyStr -Style Secondary
+	}
 
 	return ' [' + $fillStr + $emptyStr + '] ' + $Percent + '%'
 }
 
 function New-ProgressLayout {
 	$layout = New-BoxLayout
+	# ' [' + bar + '] ' + '100.00%'
 	$layout | Add-Member -NotePropertyMembers @{
-		BarWidth = 40
+		BarWidth = [Math]::Max(1, $layout.InnerWidth - 11)
 		OverallStr = " Overall Progress"
 		ItemStr = " Current File"
 		DataStr = " Data: "

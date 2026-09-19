@@ -3,7 +3,7 @@
 # import
 . "$LibRoot\Common.ps1"
 
-# shared flags
+# copy policy
 $script:RobocopyCopyFlags = @(
 	'/E',
 	'/COPY:DAT',
@@ -14,27 +14,38 @@ $script:RobocopyCopyFlags = @(
 	'/W:5'
 )
 
+$script:RobocopyThreadSlow = 1
+$script:RobocopyThreadStandard = 16
+$script:RobocopyThreadFast = 64
+$script:RobocopyLogRoot = 'C:\Temp\backup_logs'
+$script:RobocopySuccessExitCodeMax = 7
+$script:RobocopyProgressBarWidth = 40
+
 # =============================================================================
 #  Helpers
 # =============================================================================
 
 function Read-RobocopyThreadCount {
+	$slow = $script:RobocopyThreadSlow
+	$standard = $script:RobocopyThreadStandard
+	$fast = $script:RobocopyThreadFast
+
 	$choice = Read-MenuChoice -Title 'Copy Tool (Robocopy based)' -Options @(
-		@{ Key = '1'; Label = 'Slow (1 Thread)'; Description = '1 copy thread, or 1 file at a time' }
-		@{ Key = '2'; Label = 'Standard (16 Threads)'; Description = '16 copy threads, or up to 16 files at a time' }
-		@{ Key = '3'; Label = 'Fast (64 Threads)'; Description = '64 copy threads, or up to 64 files at a time' }
+		@{ Key = '1'; Label = "Slow ($slow Thread)"; Description = "$slow copy thread, or $slow file at a time" }
+		@{ Key = '2'; Label = "Standard ($standard Threads)"; Description = "$standard copy threads, or up to $standard files at a time" }
+		@{ Key = '3'; Label = "Fast ($fast Threads)"; Description = "$fast copy threads, or up to $fast files at a time" }
 		@{ Key = '4'; Label = 'Back' }
 	)
 
 	switch ($choice) {
 		'1' {
-			return 1
+			return $script:RobocopyThreadSlow
 		}
 		'2' {
-			return 16
+			return $script:RobocopyThreadStandard
 		}
 		'3' {
-			return 64
+			return $script:RobocopyThreadFast
 		}
 		'4' {
 			Write-UiText -Text "Back." -Style Secondary
@@ -51,9 +62,9 @@ function New-RobocopyLogPaths {
 	$padded = $ThreadCount.ToString("D2")
 	$title = "Robocopy $padded Thread"
 	$runId = Get-Date -Format "yyyyMMdd-HHmmss"
-	$log = "C:\Temp\backup_logs\robocopy_${padded}_thread\robocopy-$runId.log"
-	$timeLog = "C:\Temp\backup_logs\robocopy_${padded}_thread\robocopy-time-$runId.txt"
-	$logFolder = Split-Path -Parent $log
+	$logFolder = Join-Path $script:RobocopyLogRoot "robocopy_${padded}_thread"
+	$log = Join-Path $logFolder "robocopy-$runId.log"
+	$timeLog = Join-Path $logFolder "robocopy-time-$runId.txt"
 
 	New-Item -ItemType Directory -Force -Path $logFolder | Out-Null
 
@@ -127,7 +138,7 @@ function Write-RobocopySummary {
 	)
 
 	$duration = $End - $Start
-	$succeeded = $ExitCode -le 7
+	$succeeded = $ExitCode -le $script:RobocopySuccessExitCodeMax
 	$status = if ($succeeded) {
 		"Completed without fatal failure"
 	} else {
@@ -232,8 +243,9 @@ function New-ProgressBar {
 function New-ProgressLayout {
 	$layout = New-BoxLayout
 	# ' [' + bar + '] ' + '100.00%'
+	$availableWidth = [Math]::Max(1, $layout.InnerWidth - 11)
 	$layout | Add-Member -NotePropertyMembers @{
-		BarWidth = [Math]::Max(1, $layout.InnerWidth - 11)
+		BarWidth = [Math]::Min($script:RobocopyProgressBarWidth, $availableWidth)
 		OverallStr = " Overall Progress"
 		ItemStr = " Current File"
 		DataStr = " Data: "

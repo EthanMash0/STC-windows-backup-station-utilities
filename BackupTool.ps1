@@ -42,18 +42,21 @@ while ($true) {
 	switch ($choice) {
 		'1' {
 			. "$PSScriptRoot\lib\Robocopy.ps1"
-			Invoke-RobocopyTool
+			$result = Invoke-RobocopyTool
+			if ($result -eq 'Completed') {
+				Read-AfterToolChoice
+			}
 		}
 		'2' {
 			. "$PSScriptRoot\lib\FolderSize.ps1"
-			Invoke-FolderSizeTool
+			$result = Invoke-FolderSizeTool
+			if ($result -eq 'Completed') {
+				Read-AfterToolChoice
+			}
 		}
 		'3' {
 			Write-Host "Exiting."
 			exit 0
 		}
 	}
-
-	Write-Host ""
-	Pause
 }

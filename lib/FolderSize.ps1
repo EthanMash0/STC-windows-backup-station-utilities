@@ -74,7 +74,7 @@ function Write-FolderSizeProgress {
 
 	[Console]::SetCursorPosition(0, $CursorTop)
 	foreach ($line in $lines) {
-		Write-Host $line
+		Write-UiSurface -Text $line
 	}
 }
 
@@ -98,7 +98,6 @@ function Complete-FolderSizeProgress {
 		-Force
 
 	[Console]::CursorVisible = $true
-	Write-Success "Done."
 }
 
 # =============================================================================
@@ -111,7 +110,10 @@ function Invoke-FolderSizeTool {
 	$title = "Folder Size Counter"
 	Show-PathHelp -Title $title
 
-	$inputPath = Read-FolderPath -Prompt 'Path' -MustExist
+	$inputPath = Read-FolderPath -Prompt 'Path' -MustExist -RetryDraw {
+		Clear-Host
+		Show-PathHelp -Title $title
+	}
 	if ($null -eq $inputPath) {
 		return
 	}
@@ -130,8 +132,6 @@ function Invoke-FolderSizeTool {
 	}
 
 	Clear-Host
-	Show-Header -Title "Scanning:" -Style Progress
-	Write-Host $path
 	Write-Host ""
 
 	# Hashtable so ForEach-Object mutations stay visible to the caller.
@@ -189,9 +189,10 @@ function Invoke-FolderSizeTool {
 
 		Write-Host ""
 		Show-InfoBox -Title "Folder Size" -Rows @(
-			("  Total size: {0} ({1:N0} bytes)" -f (Format-ByteSize $state.Bytes), $state.Bytes)
-			("  Files:      {0:N0}" -f $state.Files)
-			("  Folders:    {0:N0}" -f $state.Folders)
+			("  Path:        {0}" -f $inputPath)
+			("  Total size:  {0} ({1:N0} bytes)" -f (Format-ByteSize $state.Bytes), $state.Bytes)
+			("  Files:       {0:N0}" -f $state.Files)
+			("  Folders:     {0:N0}" -f $state.Folders)
 		)
 	}
 	catch {
@@ -203,5 +204,5 @@ function Invoke-FolderSizeTool {
 		[Console]::CursorVisible = $true
 	}
 
-	Write-Host ""
+	return 'Completed'
 }

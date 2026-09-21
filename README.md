@@ -34,7 +34,7 @@ Robocopy-based folder copy with three presets:
 | Standard | 16 |
 | Fast | 64 |
 
-Enter a source folder and a destination (local or UNC). The tool does a dry run to estimate totals, then copies with live overall and per-file progress.
+Enter a source folder and a destination (local or UNC). Invalid paths can be re-entered. The tool then shows a confirmation summary (paths and preset) where you can start the copy, change one or both paths, or return to the main menu. After you start, it does a dry run to estimate totals, then copies with live overall and per-file progress. When a copy or folder-size run finishes, you can return to the main menu or exit.
 
 Copies use `/E` (subfolders, including empty), data/attributes/timestamps, and retries (`/R:3 /W:5`). Junctions are excluded (`/XJ`).
 

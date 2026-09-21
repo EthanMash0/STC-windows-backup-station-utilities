@@ -78,12 +78,22 @@ function Read-CopyPaths {
 	Clear-Host
 	Show-PathHelp -Title $Title
 
-	$source = Read-FolderPath -Prompt 'Source' -MustExist
+	$source = Read-FolderPath -Prompt 'Source' -MustExist -RetryDraw {
+		Clear-Host
+		Show-PathHelp -Title $Title
+	}
 	if ($null -eq $source) {
 		return $null
 	}
 
-	$dest = Read-FolderPath -Prompt 'Destination'
+	Write-Host ""
+
+	$dest = Read-FolderPath -Prompt 'Destination' -RetryDraw {
+		Clear-Host
+		Show-PathHelp -Title $Title
+		Write-Host "Source: $source"
+		Write-Host ""
+	}
 	if ($null -eq $dest) {
 		return $null
 	}
@@ -92,6 +102,31 @@ function Read-CopyPaths {
 		Source = $source
 		Dest = $dest
 	}
+}
+
+function Read-UpdatedFolderPath {
+	param(
+		[string]$Prompt,
+		[string]$Current,
+		[switch]$MustExist
+	)
+
+	$drawCurrent = {
+		Clear-Host
+		Write-Host ""
+		Write-UiText -Text "Current $($Prompt.ToLower()): $Current" -Style Secondary
+		Write-UiText -Text "Press ENTER to keep the current path." -Style Secondary
+		Write-Host ""
+	}
+
+	& $drawCurrent
+
+	$next = Read-FolderPath -Prompt $Prompt -MustExist:$MustExist -AllowEmpty -RetryDraw $drawCurrent
+	if ($null -eq $next) {
+		return $Current
+	}
+
+	return $next
 }
 
 function Get-RobocopyEstimate {
@@ -117,6 +152,65 @@ function Get-RobocopyEstimate {
 		TotalBytes = $totalBytes
 		TotalFiles = $totalFiles
 		TotalSize = Format-ByteSize $totalBytes
+	}
+}
+
+function Get-RobocopyPresetLabel {
+	param(
+		[int]$ThreadCount
+	)
+
+	switch ($ThreadCount) {
+		$script:RobocopyThreadSlow {
+			return "Slow ($ThreadCount Thread)"
+		}
+		$script:RobocopyThreadStandard {
+			return "Standard ($ThreadCount Threads)"
+		}
+		$script:RobocopyThreadFast {
+			return "Fast ($ThreadCount Threads)"
+		}
+		default {
+			return "$ThreadCount Threads"
+		}
+	}
+}
+
+function Confirm-RobocopyStart {
+	param(
+		[string]$Source,
+		[string]$Dest,
+		[int]$ThreadCount
+	)
+
+	$choice = Read-MenuChoice -Title 'Confirm Copy' -Details @(
+		"  Source:      $Source"
+		"  Destination: $Dest"
+		"  Preset:      $(Get-RobocopyPresetLabel -ThreadCount $ThreadCount)"
+	) -Options @(
+		@{ Key = '1'; Label = 'Start copy' }
+		@{ Key = '2'; Label = 'Change source' }
+		@{ Key = '3'; Label = 'Change destination' }
+		@{ Key = '4'; Label = 'Change both paths' }
+		@{ Key = '5'; Label = 'Back to main menu' }
+	)
+
+	switch ($choice) {
+		'1' {
+			return 'Start'
+		}
+		'2' {
+			return 'ChangeSource'
+		}
+		'3' {
+			return 'ChangeDest'
+		}
+		'4' {
+			return 'ChangeBoth'
+		}
+		'5' {
+			return 'Back'
+		}
 	}
 }
 
@@ -166,7 +260,7 @@ Status:      $status
 		@{ Label = 'Duration:    '; Value = $duration }
 		@{ Label = 'Seconds:     '; Value = [math]::Round($duration.TotalSeconds, 2) }
 		@{ Label = 'Minutes:     '; Value = [math]::Round($duration.TotalMinutes, 2) }
-		@{ Label = 'ExitCode:    '; Value = $ExitCode; Style = $statusStyle }
+		@{ Label = 'ExitCode:    '; Value = $ExitCode }
 		@{ Label = 'Status:      '; Value = $status; Style = $statusStyle }
 	)
 
@@ -183,7 +277,6 @@ Status:      $status
 		"  $($field.Label)$value"
 	}
 
-	Write-Host ""
 	Show-InfoBox -Title "Copy Summary" -Rows $rows
 }
 
@@ -239,8 +332,8 @@ function New-ProgressLayout {
 	$availableWidth = [Math]::Max(1, $layout.InnerWidth - 11)
 	$layout | Add-Member -NotePropertyMembers @{
 		BarWidth = [Math]::Min($script:RobocopyProgressBarWidth, $availableWidth)
-		OverallStr = " Overall Progress"
-		ItemStr = " Current File"
+		OverallStr = (Format-UiText -Text " Overall Progress" -Style Progress)
+		ItemStr = (Format-UiText -Text " Current File" -Style Progress)
 		DataStr = " Data: "
 		FilesStr = " Files: "
 		PathStr = " Path: "
@@ -257,7 +350,7 @@ function Write-CopyProgress {
 
 	[Console]::SetCursorPosition(0, $CursorTop)
 	foreach ($line in $OverallLines) {
-		Write-Host $line
+		Write-UiSurface -Text $line
 	}
 
 	$overallEnd = [Console]::CursorTop
@@ -265,7 +358,7 @@ function Write-CopyProgress {
 
 	if ($null -ne $ItemLines) {
 		foreach ($line in $ItemLines) {
-			Write-Host $line
+			Write-UiSurface -Text $line
 		}
 
 		$itemEnd = [Console]::CursorTop
@@ -393,7 +486,6 @@ function Complete-CopyProgress {
 
 	[Console]::SetCursorPosition(0, $OverallProgressEnd)
 	[Console]::CursorVisible = $true
-	Write-Success "Backup Complete!"
 }
 
 # =============================================================================
@@ -413,16 +505,61 @@ function Invoke-RobocopyTool {
 		return
 	}
 
-	# echo paths back to user
+	$readyToCopy = $false
+	while (-not $readyToCopy) {
+		$action = Confirm-RobocopyStart `
+			-Source $copyPaths.Source `
+			-Dest $copyPaths.Dest `
+			-ThreadCount $threadCount
+
+		switch ($action) {
+			'Start' {
+				$readyToCopy = $true
+			}
+			'ChangeSource' {
+				$copyPaths.Source = Read-UpdatedFolderPath `
+					-Prompt 'Source' `
+					-Current $copyPaths.Source `
+					-MustExist
+			}
+			'ChangeDest' {
+				$copyPaths.Dest = Read-UpdatedFolderPath `
+					-Prompt 'Destination' `
+					-Current $copyPaths.Dest
+			}
+			'ChangeBoth' {
+				$updated = Read-CopyPaths -Title $logPaths.Title
+				if ($null -ne $updated) {
+					$copyPaths = $updated
+				}
+			}
+			'Back' {
+				return
+			}
+		}
+	}
+
 	Clear-Host
 	Write-Host ""
-	Show-InfoBox -Title "Copying" -Rows @(
+	Show-InfoBox -Title "Copying" -TrailingBlank -Rows @(
 		"  Source:      $($copyPaths.Source)"
 		"  Destination: $($copyPaths.Dest)"
+		"  Preset:      $(Get-RobocopyPresetLabel -ThreadCount $threadCount)"
 	)
-	Write-Host ""
+	$estimateTop = [Console]::CursorTop
+	Show-InfoBox -Title "Estimating" -TitleStyle Progress -Rows @(
+		"  Size:  ..."
+		"  Files: ..."
+	)
 
 	$estimate = Get-RobocopyEstimate -Source $copyPaths.Source -Dest $copyPaths.Dest
+
+	[Console]::SetCursorPosition(0, $estimateTop)
+	Show-InfoBox -Title "Estimating" -TitleStyle Progress -Rows @(
+		"  Size:  $($estimate.TotalSize)"
+		"  Files: $($estimate.TotalFiles)"
+	)
+	Write-Host ""
 
 	$currentBytes = 0
 	$currentFiles = 0
@@ -432,9 +569,6 @@ function Invoke-RobocopyTool {
 	$newItem = $false
 	$makeProgress = $false
 	$initiated = $false
-
-	Write-UiText -Text "Making Backup..." -Style Progress
-	Write-Host ""
 
 	$progressTop = [Console]::CursorTop
 	$overallProgressEnd = $progressTop
@@ -523,4 +657,6 @@ function Invoke-RobocopyTool {
 		-TimeLog $logPaths.TimeLog `
 		-Log $logPaths.Log `
 		-Estimate $estimate
+
+	return 'Completed'
 }

@@ -3,13 +3,14 @@ function Show-PathHelp {
 		[string]$Title
 	)
 
-	Show-Header -Title $Title
-	Write-UiText -Text "Enter a local path like:" -Style Secondary
-	Write-Host "  D:\Users\STC"
 	Write-Host ""
-	Write-UiText -Text "Or a network path like:" -Style Secondary
-	Write-Host "  \\server\share\folder"
-	Write-Host ""
+	Show-InfoBox -Title $Title -TrailingBlank -Rows @(
+		(Format-UiText -Text "  Enter a local path like:" -Style Secondary)
+		"    D:\Users\STC"
+		""
+		(Format-UiText -Text "  Or a network path like:" -Style Secondary)
+		"    \\server\share\folder"
+	)
 }
 
 function Test-FolderPath {
@@ -61,29 +62,42 @@ function Read-FolderPath {
 		[Parameter(Mandatory = $true)]
 		[string]$Prompt,
 
-		[switch]$MustExist
+		[switch]$MustExist,
+
+		[switch]$AllowEmpty,
+
+		[scriptblock]$RetryDraw
 	)
 
-	$value = Read-Host $Prompt
-	$value = $value.Trim().Trim('"').TrimEnd('\')
+	while ($true) {
+		$value = Read-UiInput -Prompt $Prompt
+		$value = $value.Trim().Trim('"').TrimEnd('\')
 
-	if ([string]::IsNullOrWhiteSpace($value)) {
-		Write-ErrorMessage "No $($Prompt.ToLower()) entered."
-		return $null
+		if ([string]::IsNullOrWhiteSpace($value)) {
+			if (-not $AllowEmpty) {
+				Write-ErrorMessage "No $($Prompt.ToLower()) entered."
+			}
+
+			return $null
+		}
+
+		if (Test-FolderPath -Path $value -MustExist:$MustExist) {
+			return $value
+		}
+
+		if ($MustExist) {
+			$errorMessage = "$Prompt folder does not exist: $value"
+		} else {
+			$errorMessage = "$Prompt folder does not exist and cannot be created: $value"
+		}
+
+		if ($RetryDraw) {
+			& $RetryDraw
+		}
+
+		Write-ErrorMessage $errorMessage
+		Write-Host ""
 	}
-
-	if (Test-FolderPath -Path $value -MustExist:$MustExist) {
-		return $value
-	}
-
-	if ($MustExist) {
-		Write-ErrorMessage "$Prompt folder does not exist."
-	} else {
-		Write-ErrorMessage "$Prompt folder does not exist and cannot be created."
-	}
-
-	Write-Host $value
-	return $null
 }
 
 function Format-ByteSize {

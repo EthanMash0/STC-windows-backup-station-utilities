@@ -46,18 +46,22 @@ function Initialize-Ui {
 		UseVt = Enable-VirtualTerminal
 		Esc = [char]27
 		Theme = @{
-			Header = @(126, 182, 255)
+			Header = @(255, 163, 227)
 			Secondary = @(154, 154, 154)
 			Success = @(110, 170, 88)
 			Error = @(255, 107, 107)
-			Progress = @(230, 180, 80)
+			Progress = @(236, 212, 118)
+			Prompt = @(126, 182, 255)
+			Accent = @(232, 148, 80)
 		}
 		Fallback = @{
-			Header = $null
+			Header = 'Magenta'
 			Secondary = 'DarkGray'
 			Success = 'Green'
 			Error = 'Red'
 			Progress = 'Yellow'
+			Prompt = $null
+			Accent = 'DarkYellow'
 		}
 	}
 }
@@ -69,7 +73,7 @@ function Format-UiText {
 		[string]$Text,
 
 		[Parameter(Mandatory = $true)]
-		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress')]
+		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress', 'Prompt', 'Accent')]
 		[string]$Style
 	)
 
@@ -84,6 +88,38 @@ function Format-UiText {
 	# Keep black behind the text. SGR 0 resets to the console default, which
 	# is dark blue in powershell.exe — not the Black we set on RawUI.
 	return "$esc[38;2;$($rgb[0]);$($rgb[1]);$($rgb[2])m$esc[48;2;0;0;0m$Text$esc[38;2;255;255;255m$esc[48;2;0;0;0m"
+}
+
+function Format-UiSurface {
+	param(
+		[AllowEmptyString()]
+		[string]$Text
+	)
+
+	Initialize-Ui
+
+	if (-not $global:StcUi.UseVt -or [string]::IsNullOrEmpty($Text)) {
+		return $Text
+	}
+
+	$esc = $global:StcUi.Esc
+	return "$esc[38;2;255;255;255m$esc[48;2;0;0;0m$Text$esc[38;2;255;255;255m$esc[48;2;0;0;0m"
+}
+
+function Write-UiSurface {
+	param(
+		[AllowEmptyString()]
+		[string]$Text,
+
+		[switch]$NoNewline
+	)
+
+	$line = Format-UiSurface $Text
+	if ($NoNewline) {
+		Write-Host $line -NoNewline
+	} else {
+		Write-Host $line
+	}
 }
 
 function Get-VisibleTextLength {
@@ -107,7 +143,7 @@ function Write-UiText {
 		[string]$Text,
 
 		[Parameter(Mandatory = $true)]
-		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress')]
+		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress', 'Prompt', 'Accent')]
 		[string]$Style,
 
 		[switch]$NoNewline
@@ -166,7 +202,7 @@ function Show-Header {
 		[Parameter(Mandatory = $true)]
 		[string]$Title,
 
-		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress')]
+		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress', 'Prompt', 'Accent')]
 		[string]$Style = 'Header'
 	)
 
@@ -243,7 +279,7 @@ function Write-BoxLine {
 		[string]$Style
 	)
 
-	Write-Host $Layout.Bar -NoNewline
+	Write-UiSurface -Text $Layout.Bar -NoNewline
 
 	$visibleLength = Get-VisibleTextLength $Text
 	$pad = [Math]::Max(0, $Layout.InnerWidth - $visibleLength)
@@ -251,10 +287,10 @@ function Write-BoxLine {
 	if (-not [string]::IsNullOrWhiteSpace($Style)) {
 		Write-UiText -Text $padded -Style $Style -NoNewline
 	} else {
-		Write-Host $padded -NoNewline
+		Write-UiSurface -Text $padded -NoNewline
 	}
 
-	Write-Host $Layout.Bar
+	Write-UiSurface -Text $Layout.Bar
 }
 
 function Show-InfoBox {
@@ -264,15 +300,33 @@ function Show-InfoBox {
 
 		[string[]]$Rows,
 
-		[switch]$TrailingBlank
+		[switch]$TrailingBlank,
+
+		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress', 'Prompt', 'Accent')]
+		[string]$TitleStyle = 'Header'
 	)
 
 	$layout = New-BoxLayout
-	$titleText = Format-UiText -Text "  $Title" -Style Header
+	$titleText = Format-UiText -Text "  $Title" -Style $TitleStyle
 	$lines = Format-Box -Layout $layout -Title $titleText -Rows $Rows -TrailingBlank:$TrailingBlank
 	foreach ($line in $lines) {
-		Write-Host $line
+		Write-UiSurface -Text $line
 	}
+}
+
+function Read-UiInput {
+	param(
+		[Parameter(Mandatory = $true)]
+		[string]$Prompt
+	)
+
+	Write-UiText -Text "${Prompt}: " -Style Prompt -NoNewline
+	$value = [Console]::ReadLine()
+	if ($null -eq $value) {
+		return ''
+	}
+
+	return $value
 }
 
 function Read-MenuChoice {
@@ -283,7 +337,14 @@ function Read-MenuChoice {
 		[Parameter(Mandatory = $true)]
 		[hashtable[]]$Options,
 
-		[string]$Prompt
+		[string[]]$Details,
+
+		[string]$Prompt,
+
+		[switch]$NoClear,
+
+		[ValidateSet('Header', 'Secondary', 'Success', 'Error', 'Progress', 'Prompt', 'Accent')]
+		[string]$TitleStyle = 'Header'
 	)
 
 	$keys = foreach ($option in $Options) {
@@ -296,24 +357,38 @@ function Read-MenuChoice {
 
 	$layout = New-BoxLayout
 
-	Clear-Host
+	if (-not $NoClear) {
+		Clear-Host
+	}
+
 	Write-Host ""
-	Write-Host $layout.Top
-	Write-BoxLine -Layout $layout -Text "  $Title" -Style Header
-	Write-Host $layout.Cross
+	Write-UiSurface -Text $layout.Top
+	Write-BoxLine -Layout $layout -Text "  $Title" -Style $TitleStyle
+	Write-UiSurface -Text $layout.Cross
+
+	if ($Details -and $Details.Count -gt 0) {
+		foreach ($detail in $Details) {
+			Write-BoxLine -Layout $layout -Text $detail -Style Secondary
+		}
+
+		Write-UiSurface -Text $layout.Cross
+	}
 
 	foreach ($option in $Options) {
-		Write-BoxLine -Layout $layout -Text "  [$($option.Key)]  $($option.Label)"
+		$keyText = Format-UiText -Text "[$($option.Key)]" -Style Prompt
+		Write-BoxLine -Layout $layout -Text "  $keyText  $($option.Label)"
 		if (-not [string]::IsNullOrWhiteSpace($option.Description)) {
 			Write-BoxLine -Layout $layout -Text "       $($option.Description)" -Style Secondary
+		} else {
+			Write-BoxLine -Layout $layout -Text ''
 		}
 	}
 
-	Write-Host $layout.Bottom
+	Write-UiSurface -Text $layout.Bottom
 	Write-Host ""
 
 	do {
-		$choice = Read-Host $Prompt
+		$choice = Read-UiInput -Prompt $Prompt
 		$choice = $choice.Trim().Trim('"')
 
 		if ($choice -notin $keys) {
@@ -322,6 +397,33 @@ function Read-MenuChoice {
 	} while ($choice -notin $keys)
 
 	return $choice
+}
+
+function Read-AfterToolChoice {
+	Write-Host ""
+	$label = " FINISHED "
+	$boxWidth = [Math]::Max($label.Length, [Console]::WindowWidth - 1)
+	$width = [Math]::Max($label.Length, $boxWidth - 4)
+	$pad = $width - $label.Length
+	$left = [int][Math]::Floor($pad / 2)
+	$right = $pad - $left
+	$inset = [int][Math]::Floor(($boxWidth - $width) / 2)
+	$rule = [char]0x2500
+	if ($inset -gt 0) {
+		Write-Host ([String]::new(' ', $inset)) -NoNewline
+	}
+	Write-UiText -Text ([String]::new($rule, $left)) -Style Secondary -NoNewline
+	Write-UiText -Text $label -Style Success -NoNewline
+	Write-UiText -Text ([String]::new($rule, $right)) -Style Secondary
+	$choice = Read-MenuChoice -Title 'Next' -NoClear -TitleStyle Header -Options @(
+		@{ Key = '1'; Label = 'Back to main menu' }
+		@{ Key = '2'; Label = 'Exit' }
+	)
+
+	if ($choice -eq '2') {
+		Write-Host "Exiting."
+		exit 0
+	}
 }
 
 Initialize-Ui

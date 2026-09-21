@@ -247,6 +247,7 @@ Seconds:     $([math]::Round($duration.TotalSeconds, 2))
 Minutes:     $([math]::Round($duration.TotalMinutes, 2))
 ExitCode:    $ExitCode
 Status:      $status
+Log:         ${Log}
 "@
 	$summary | Tee-Object -FilePath $TimeLog | Out-Null
 
@@ -262,11 +263,8 @@ Status:      $status
 		@{ Label = 'Minutes:     '; Value = [math]::Round($duration.TotalMinutes, 2) }
 		@{ Label = 'ExitCode:    '; Value = $ExitCode }
 		@{ Label = 'Status:      '; Value = $status; Style = $statusStyle }
+		@{ Label = 'Log:         '; Value = $Log }
 	)
-
-	if (-not $succeeded) {
-		$fields += @{ Label = 'Log:         '; Value = $Log }
-	}
 
 	$rows = foreach ($field in $fields) {
 		$value = if ($field.Style) {

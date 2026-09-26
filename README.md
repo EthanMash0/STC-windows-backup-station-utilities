@@ -54,7 +54,11 @@ You then get a **Confirm Copy** summary (source, destination, preset):
 
 When changing one path, Enter keeps the current value. Changing both paths and then canceling leaves the previous pair unchanged.
 
-After you start, the tool does a dry run to estimate total size and file count, then copies with live overall progress (data and files) and per-file progress. When it finishes, it shows a summary (paths, size, file count, timing, Robocopy exit code, status, and log path) and writes the same timing summary next to the Robocopy log.
+After you start, the tool does a dry run to estimate total size and file count, then copies with live overall progress (data and files) and per-file progress. When it finishes, it shows a summary (paths, size, file count, timing, Robocopy exit code, status, and log path) and writes the same timing summary next to the Robocopy log. The summary's size and file count come from the initial estimate.
+
+Robocopy runs as a separate process and writes directly to its log. Like the Folder Size tool, the copy tool processes available activity continuously and limits only screen refreshes to once every 100 milliseconds. It waits for new data only after catching up with the log, so the read-buffer size does not limit processing to one chunk per refresh. Console rendering cannot block Robocopy through an output pipe.
+
+The original progress display is approximate: file listings do not confirm completed writes, and multithreaded percentage messages do not identify which file they belong to. The Current File box retains the original association with the most recently listed file. Completion is determined by the process exiting, not by a percentage reaching 100%. Log buffering can delay updates. As before, parsing estimates and file activity expects English Robocopy output.
 
 #### What is copied
 
@@ -65,7 +69,8 @@ Copies use:
 - `/XJ` — junctions excluded (important on user profiles)
 - `/R:3 /W:5` — 3 retries, 5 seconds between retries
 - `/MT:<threads>` — the Slow / Standard / Fast preset
-- `/TEE /LOG:` — console output plus a log file
+- `/UNILOG:` — Unicode log file, read by the progress display; no `/TEE`
+- `/FP` — log full file paths; per-file percentages remain enabled
 
 This is a copy, not a mirror. Extra files already in the destination are left alone. Hidden and system files are included. Junctions are not followed.
 
@@ -81,14 +86,16 @@ Logs and a timing summary are written under `C:\Temp\backup_logs`. The thread co
 
 Each run writes:
 
-- `robocopy-yyyyMMdd-HHmmss.log` — full Robocopy log
-- `robocopy-time-yyyyMMdd-HHmmss.txt` — timing and status summary
+- `robocopy-yyyyMMdd-HHmmss-<id>.log` — Robocopy log in UTF-16, including file activity, errors, and the final summary
+- `robocopy-time-yyyyMMdd-HHmmss-<id>.txt` — timing and status summary
 
-Example: `C:\Temp\backup_logs\robocopy_16_thread\robocopy-20260914-184600.log`
+The eight-character run ID keeps simultaneous runs from sharing a log. Example: `C:\Temp\backup_logs\robocopy_16_thread\robocopy-20260914-184600-a13b4c5d.log`
+
+The log reader uses 64 KB buffers and immediately reads another chunk when more data is available. On process exit, it reads the final summary without replaying a backlog of activity and uses its copied totals for the final overall progress update when available. Reported duration uses the process start and exit times and excludes the initial estimate and UI cleanup. Ctrl+C or a monitoring error triggers cleanup that stops an active child process and closes the log reader.
 
 #### Robocopy exit codes
 
-An exit code of **7 or lower** is treated as success (no fatal failure). **8 or higher** means the copy failed; check the log.
+Exit codes **0 through 7** are treated as success (no fatal failure). **8 or higher**, or a negative process exit code, means the copy failed; check the log.
 
 Robocopy returns a bit mask. The base flags are **1** (files copied), **2** (extra files or directories on the destination), **4** (mismatched files or directories), **8** (copy failures after retries), and **16** (serious error). Combined values are the sum of those flags:
 

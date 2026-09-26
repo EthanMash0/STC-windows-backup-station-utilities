@@ -15,6 +15,8 @@ $script:RobocopyThreadFast = 64
 $script:RobocopyLogRoot = 'C:\Temp\backup_logs'
 $script:RobocopySuccessExitCodeMax = 7
 $script:RobocopyProgressBarWidth = 40
+$script:RobocopyProgressIntervalMs = 100
+$script:RobocopyLogReadBufferBytes = 65536
 
 # =============================================================================
 #  Helpers
@@ -57,6 +59,8 @@ function New-RobocopyLogPaths {
 	$padded = $ThreadCount.ToString("D2")
 	$title = "Robocopy $padded Thread"
 	$runId = Get-Date -Format "yyyyMMdd-HHmmss"
+	# The log reader must never see an earlier or concurrent run's output.
+	$runId += '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
 	$logFolder = Join-Path $script:RobocopyLogRoot "robocopy_${padded}_thread"
 	$log = Join-Path $logFolder "robocopy-$runId.log"
 	$timeLog = Join-Path $logFolder "robocopy-time-$runId.txt"
@@ -176,6 +180,144 @@ function Get-RobocopyPresetLabel {
 	}
 }
 
+function ConvertTo-RobocopyArgument {
+	param(
+		[string]$Value
+	)
+
+	# ProcessStartInfo.Arguments uses Windows command-line quoting, not shell
+	# quoting. Escape quotes and double backslashes before the closing quote.
+	$escaped = [regex]::Replace($Value, '(\\*)"', '$1$1\"')
+	$escaped = [regex]::Replace($escaped, '(\\+)$', '$1$1')
+	return '"' + $escaped + '"'
+}
+
+function New-RobocopyProcess {
+	param(
+		[string]$Source,
+		[string]$Dest,
+		[int]$ThreadCount,
+		[string]$Log
+	)
+
+	$arguments = @($Source, $Dest) + $script:RobocopyCopyFlags + @(
+		"/MT:$ThreadCount",
+		'/FP',
+		"/UNILOG:$Log"
+	)
+	$quotedArguments = foreach ($argument in $arguments) {
+		ConvertTo-RobocopyArgument -Value $argument
+	}
+
+	$executable = (Get-Command robocopy.exe -CommandType Application -ErrorAction Stop).Source
+	$process = New-Object System.Diagnostics.Process
+	$process.StartInfo.FileName = $executable
+	$process.StartInfo.Arguments = $quotedArguments -join ' '
+	$process.StartInfo.UseShellExecute = $false
+	$process.StartInfo.CreateNoWindow = $true
+	$process.StartInfo.RedirectStandardOutput = $true
+	$process.StartInfo.RedirectStandardError = $true
+	return $process
+}
+
+function New-RobocopyLogReader {
+	param(
+		[string]$Log
+	)
+
+	return @{
+		Path = $Log
+		Stream = $null
+		Decoder = [System.Text.Encoding]::Unicode.GetDecoder()
+		Buffer = New-Object byte[] $script:RobocopyLogReadBufferBytes
+		Characters = New-Object char[] ($script:RobocopyLogReadBufferBytes + 2)
+		PendingLine = ''
+		SeenFiles = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+		CurrentBytes = [long]0
+		CurrentFiles = [long]0
+		FileName = '(waiting for file activity)'
+		ItemBytes = [long]0
+		ItemPercent = [double]0
+		ProgressChanged = $false
+		CopiedBytes = $null
+		CopiedFiles = $null
+	}
+}
+
+function Read-RobocopyLog {
+	param(
+		[hashtable]$State,
+		[switch]$Final
+	)
+
+	if ($null -eq $State.Stream) {
+		if (-not [System.IO.File]::Exists($State.Path)) {
+			return
+		}
+		$State.Stream = [System.IO.File]::Open(
+			$State.Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read,
+			[System.IO.FileShare]::ReadWrite
+		)
+	}
+
+	# Use fixed-size read buffers, but keep consuming chunks without waiting
+	# when more data is available. Only screen drawing is rate-limited.
+	# On exit, read the summary without replaying any remaining activity.
+	$skipFirstLine = $false
+	if ($Final -and ($State.Stream.Length - $State.Stream.Position) -gt $State.Buffer.Length) {
+		$offset = $State.Stream.Length - $State.Buffer.Length
+		$offset -= $offset % 2
+		$null = $State.Stream.Seek($offset, [System.IO.SeekOrigin]::Begin)
+		$State.Decoder.Reset()
+		$State.PendingLine = ''
+		$skipFirstLine = $true
+	}
+
+	$count = $State.Stream.Read($State.Buffer, 0, $State.Buffer.Length)
+	$characterCount = $State.Decoder.GetChars($State.Buffer, 0, $count, $State.Characters, 0, [bool]$Final)
+	$text = $State.PendingLine + [string]::new($State.Characters, 0, $characterCount)
+	# Percent updates can be separated by carriage returns without newlines.
+	$lines = $text -split "`r`n|`r|`n"
+	$State.PendingLine = ''
+	$lineCount = $lines.Length
+	if (-not $Final) {
+		# A writer may stop in the middle of a line or a UTF-16 character.
+		$State.PendingLine = $lines[$lineCount - 1]
+		$lineCount--
+	}
+
+	$firstLine = if ($skipFirstLine) { 1 } else { 0 }
+	for ($i = $firstLine; $i -lt $lineCount; $i++) {
+		$line = $lines[$i].TrimStart([char]0xFEFF).TrimEnd("`r")
+		$parsed = Parse-RobocopyProgressLine -Line $line
+		if ($parsed.Kind -eq 'File') {
+			$State.FileName = $parsed.FileName
+			$State.ItemBytes = $parsed.ItemBytes
+			$State.ItemPercent = 0
+			$State.ProgressChanged = $true
+			if ($State.SeenFiles.Add($parsed.FileName)) {
+				$State.CurrentBytes += $parsed.ItemBytes
+				$State.CurrentFiles++
+			}
+		}
+		elseif ($parsed.Kind -eq 'Percent') {
+			# Preserve the original display's most-recent-file association.
+			# Robocopy does not identify the file on an /MT percentage row.
+			if ($State.CurrentFiles -gt 0) {
+				$State.ItemPercent = $parsed.ItemPercent
+				$State.ProgressChanged = $true
+			}
+		}
+		elseif ($line -match '^\s*(Files|Bytes)\s*:\s*\d+\s+(\d+)\s+\d+\s+\d+\s+(\d+)\s+\d+\s*$') {
+			if ($matches[1] -eq 'Files') {
+				$State.CopiedFiles = [long]$matches[2]
+			} else {
+				$State.CopiedBytes = [long]$matches[2]
+			}
+		}
+	}
+}
+
 function Confirm-RobocopyStart {
 	param(
 		[string]$Source,
@@ -227,7 +369,7 @@ function Write-RobocopySummary {
 	)
 
 	$duration = $End - $Start
-	$succeeded = $ExitCode -le $script:RobocopySuccessExitCodeMax
+	$succeeded = $ExitCode -ge 0 -and $ExitCode -le $script:RobocopySuccessExitCodeMax
 	$status = if ($succeeded) {
 		"Completed without fatal failure"
 	} else {
@@ -383,12 +525,12 @@ function Parse-RobocopyProgressLine {
 		}
 	}
 
-	# Percent rows: 3-character padded percent, then "%"
-	#   e.g. "  0%", " 10%", "100%"
-	if ($Line -match "^(  \d| \d{2}|\d{3})%\s*$") {
+	# Robocopy versions emit either integer or decimal percentage rows.
+	if ($Line -match '^\s*(\d{1,3}(?:\.\d+)?)%\s*$') {
+		$percent = [double]::Parse($matches[1], [Globalization.CultureInfo]::InvariantCulture)
 		return [pscustomobject]@{
 			Kind = 'Percent'
-			ItemPercent = [int]$matches[1].Trim()
+			ItemPercent = [Math]::Min($percent, 100)
 		}
 	}
 
@@ -559,92 +701,129 @@ function Invoke-RobocopyTool {
 	)
 	Write-Host ""
 
-	$currentBytes = 0
-	$currentFiles = 0
-
 	$layout = New-ProgressLayout
-
-	$newItem = $false
-	$makeProgress = $false
+	$state = New-RobocopyLogReader -Log $logPaths.Log
+	$process = $null
+	$started = $false
 	$initiated = $false
+	$progressClock = [System.Diagnostics.Stopwatch]::StartNew()
+	$lastProgressTick = -$script:RobocopyProgressIntervalMs
 
 	$progressTop = [Console]::CursorTop
 	$overallProgressEnd = $progressTop
 	$itemProgressEnd = $progressTop
 
-	# start timer
-	$start = Get-Date
-
 	try {
 		[Console]::CursorVisible = $false
-		robocopy $copyPaths.Source $copyPaths.Dest `
-			@script:RobocopyCopyFlags `
-			/MT:$threadCount `
-			/TEE `
-			/LOG:$($logPaths.Log) | ForEach-Object {
+		$process = New-RobocopyProcess `
+			-Source $copyPaths.Source `
+			-Dest $copyPaths.Dest `
+			-ThreadCount $threadCount `
+			-Log $logPaths.Log
 
-			$parsed = Parse-RobocopyProgressLine -Line $_.ToString()
+		# Do not pipe Robocopy into PowerShell. Its log is the progress source;
+		# slow screen updates cannot fill an output pipe and stall the copy.
+		$started = $process.Start()
+		$start = $process.StartTime
+		# Drain startup diagnostics asynchronously, including log-open errors.
+		# There is no /TEE, so file activity goes only to the Unicode log.
+		$outputTask = $process.StandardOutput.ReadToEndAsync()
+		$errorTask = $process.StandardError.ReadToEndAsync()
 
-			if ($parsed.Kind -eq 'File') {
-				$initiated = $true
-				$newItem = $true
-				$makeProgress = $true
-
-				$itemBytes = $parsed.ItemBytes
-				$fileName = $parsed.FileName
-				$itemPercent = 0
-			}
-			elseif ($parsed.Kind -eq 'Percent') {
-				$initiated = $true
-				$newItem = $false
-				$makeProgress = $true
-
-				$itemPercent = $parsed.ItemPercent
-			}
-			else {
-				$newItem = $false
-				$makeProgress = $false
+		while ($true) {
+			$exited = $process.HasExited
+			Read-RobocopyLog -State $state -Final:$exited
+			if ($exited) {
+				$exitCode = $process.ExitCode
+				$end = $process.ExitTime
+				break
 			}
 
-			if ($makeProgress -eq $true) {
+			# Like Folder Size, update counters for every item but build and draw
+			# the progress boxes only when the refresh interval has elapsed.
+			$now = $progressClock.ElapsedMilliseconds
+			if ($state.ProgressChanged -and ($now - $lastProgressTick) -ge $script:RobocopyProgressIntervalMs) {
+				$lastProgressTick = $now
 				$overallStatus = New-OverallProgressBox `
 					-Layout $layout `
 					-Estimate $estimate `
-					-CurrentBytes $currentBytes `
-					-CurrentFiles $currentFiles
-
+					-CurrentBytes $state.CurrentBytes `
+					-CurrentFiles $state.CurrentFiles
 				$itemStatus = New-ItemProgressBox `
 					-Layout $layout `
-					-FileName $fileName `
-					-ItemBytes $itemBytes `
-					-ItemPercent $itemPercent
-
+					-FileName $state.FileName `
+					-ItemBytes $state.ItemBytes `
+					-ItemPercent $state.ItemPercent
 				$progressEnds = Write-CopyProgress -OverallLines $overallStatus -ItemLines $itemStatus -CursorTop $progressTop
 				$overallProgressEnd = $progressEnds.OverallEnd
 				$itemProgressEnd = $progressEnds.ItemEnd
+				$initiated = $true
+				$state.ProgressChanged = $false
 			}
 
-			if ($newItem -eq $true) {
-				$currentBytes += $itemBytes
-				$currentFiles += 1
+			# Never sleep with unread log data. Pause only after catching up,
+			# so the read-buffer size does not cap progress processing speed.
+			if ($null -eq $state.Stream -or $state.Stream.Position -ge $state.Stream.Length) {
+				Start-Sleep -Milliseconds $script:RobocopyProgressIntervalMs
 			}
 		}
+
+		# Finish asynchronous reads before disposing their process streams.
+		$diagnostics = ($outputTask.GetAwaiter().GetResult() + $errorTask.GetAwaiter().GetResult()).Trim()
+
+		if ($null -ne $state.CopiedBytes -and $null -ne $state.CopiedFiles) {
+			$state.CurrentBytes = $state.CopiedBytes
+			$state.CurrentFiles = $state.CopiedFiles
+		}
+	}
+	catch {
+		Write-Host ""
+		Write-ErrorMessage "Copy interrupted: $($_.Exception.Message)"
+		Write-UiText -Text "Log: $($logPaths.Log)" -Style Secondary
+		return 'Completed'
 	}
 	finally {
-		Complete-CopyProgress `
-			-Layout $layout `
-			-Estimate $estimate `
-			-CurrentBytes $currentBytes `
-			-CurrentFiles $currentFiles `
-			-ProgressTop $progressTop `
-			-OverallProgressEnd $overallProgressEnd `
-			-ItemProgressEnd $itemProgressEnd `
-			-Initiated $initiated
+		try {
+			# Ctrl+C or a display/read error must not leave a hidden copy running.
+			if ($started -and -not $process.HasExited) {
+				try {
+					$process.Kill()
+				}
+				catch {
+					# The process may exit between HasExited and Kill.
+					if (-not $process.HasExited) {
+						throw
+					}
+				}
+				$process.WaitForExit()
+			}
+		}
+		finally {
+			if ($null -ne $state.Stream) {
+				$state.Stream.Dispose()
+			}
+			if ($null -ne $process) {
+				$process.Dispose()
+			}
+			[Console]::CursorVisible = $true
+		}
 	}
 
-	$exitCode = $LASTEXITCODE
-	# end timer
-	$end = Get-Date
+	Complete-CopyProgress `
+		-Layout $layout `
+		-Estimate $estimate `
+		-CurrentBytes $state.CurrentBytes `
+		-CurrentFiles $state.CurrentFiles `
+		-ProgressTop $progressTop `
+		-OverallProgressEnd $overallProgressEnd `
+		-ItemProgressEnd $itemProgressEnd `
+		-Initiated $initiated
+
+	if ($exitCode -lt 0 -or $exitCode -gt $script:RobocopySuccessExitCodeMax) {
+		if (-not [string]::IsNullOrWhiteSpace($diagnostics)) {
+			Write-ErrorMessage $diagnostics
+		}
+	}
 
 	Write-RobocopySummary `
 		-Source $copyPaths.Source `

@@ -12,7 +12,7 @@ There are no command-line arguments. Source, destination, and options are entere
 - Write access so the copy tool can create `C:\Temp\backup_logs`
 - Administrator rights (`run.bat` always requests elevation via UAC)
 
-Use a normal `powershell.exe` window. Some hosts (PowerShell ISE, remoting) cannot resize the window or set colors; the tools still run, but the UI may look wrong.
+Use a normal `powershell.exe` window for live progress and resize handling. Hosts without interactive console support use sequential output and their normal line input instead; they show results without live screen redraws.
 
 ## How to run
 
@@ -27,6 +27,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\path\to\STC-windows-
 The console title is `STC Backup Station`. When the host allows it, the window is set to a black background, UTF-8 output, and a minimum width of 80 columns.
 
 The main menu is **Copy Data**, **Folder Size**, and **Exit**. After a copy or folder-size run finishes, you can return to the main menu or exit. Canceling before a run starts (empty path, **Back**) returns to the main menu without that prompt.
+
+Menus, prompts, progress, and summaries share the same screen renderer. Resizing rebuilds the current screen, clears stale rows, and preserves partially entered input and the summary above the **Next** menu. Ordinary updates write only changed rows. Long confirmation paths, summaries, and messages wrap; progress paths keep their ending with a leading `...`. Fitting affects displayed text only. If the console buffer is too short for the entire screen, the last rows remain visible; enlarging the buffer restores the retained content.
+
+Input supports Left/Right, Home/End, Backspace/Delete, Insert to toggle overwrite, Escape to clear the line, and Up/Down for recent input in this session. Ctrl+Left/Right moves by words. Ctrl+V and Shift+Insert paste the first clipboard line without submitting it; Enter submits the value. Ctrl+C cancels. Very long input scrolls horizontally while keeping the complete value. Input history stays in memory and is not written to a file.
 
 ## Tools
 
@@ -57,6 +61,8 @@ When changing one path, Enter keeps the current value. Changing both paths and t
 After you start, the tool does a dry run to estimate total size and file count, then copies with live overall progress (data and files) and per-file progress. When it finishes, it shows a summary (paths, size, file count, timing, Robocopy exit code, status, and log path) and writes the same timing summary next to the Robocopy log. The summary's size and file count come from the initial estimate.
 
 Robocopy runs as a separate process and writes directly to its log. Like the Folder Size tool, the copy tool processes available activity continuously and limits only screen refreshes to once every 100 milliseconds. It waits for new data only after catching up with the log, so the read-buffer size does not limit processing to one chunk per refresh. Console rendering cannot block Robocopy through an output pipe.
+
+The display checks console dimensions at each refresh interval, including when there is no new log activity. A resize during drawing is retried without stopping Robocopy. The initial dry run still runs once with the same list-only options, but its process output is drained asynchronously so estimation also allows screen refreshes. Cancellation cleans up an active estimate or copy process.
 
 The original progress display is approximate: file listings do not confirm completed writes, and multithreaded percentage messages do not identify which file they belong to. The Current File box retains the original association with the most recently listed file. Completion is determined by the process exiting, not by a percentage reaching 100%. Log buffering can delay updates. As before, parsing estimates and file activity expects English Robocopy output.
 
@@ -124,6 +130,8 @@ Robocopy returns a bit mask. The base flags are **1** (files copied), **2** (ext
 Recursively counts files, subfolders, and total bytes at a path you enter (must already exist). Hidden and system items are included.
 
 While it scans, it shows live size, file count, folder count, and the path currently being read. The final summary repeats the path you typed, the total size (human-readable and bytes), and the file and folder counts.
+
+Enumeration runs in an in-process PowerShell worker, publishing a complete progress snapshot at most once every 100 milliseconds and once at completion. The main thread owns all console output and can handle resizing while a filesystem read is waiting. Counting still sums each readable file's `Length`; it does not measure allocated disk space or confirm that a concurrent copy has finished. Cancellation stops and disposes the worker.
 
 Long paths are supported via the `\\?\` prefix:
 

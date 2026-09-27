@@ -55,7 +55,7 @@ while ($true) {
 			}
 		}
 		'3' {
-			Write-Host "Exiting."
+			Write-UiLine -Text "Exiting."
 			exit 0
 		}
 	}

@@ -45,7 +45,7 @@ function Read-RobocopyThreadCount {
 			return $script:RobocopyThreadFast
 		}
 		'4' {
-			Write-UiText -Text "Back." -Style Secondary
+			Write-UiLine -Text "Back." -Style Secondary
 			return $null
 		}
 	}
@@ -79,24 +79,24 @@ function Read-CopyPaths {
 		[string]$Title
 	)
 
-	Clear-Host
+	Reset-UiScreen
 	Show-PathHelp -Title $Title
 
 	$source = Read-FolderPath -Prompt 'Source' -MustExist -RetryDraw {
-		Clear-Host
+		Reset-UiScreen
 		Show-PathHelp -Title $Title
 	}
 	if ($null -eq $source) {
 		return $null
 	}
 
-	Write-Host ""
+	Write-UiLine
 
 	$dest = Read-FolderPath -Prompt 'Destination' -RetryDraw {
-		Clear-Host
+		Reset-UiScreen
 		Show-PathHelp -Title $Title
-		Write-Host "Source: $source"
-		Write-Host ""
+		Write-UiLine -Text "Source: $source"
+		Write-UiLine
 	}
 	if ($null -eq $dest) {
 		return $null
@@ -116,11 +116,11 @@ function Read-UpdatedFolderPath {
 	)
 
 	$drawCurrent = {
-		Clear-Host
-		Write-Host ""
-		Write-UiText -Text "Current $($Prompt.ToLower()): $Current" -Style Secondary
-		Write-UiText -Text "Press ENTER to keep the current path." -Style Secondary
-		Write-Host ""
+		Reset-UiScreen
+		Write-UiLine
+		Write-UiLine -Text "Current $($Prompt.ToLower()): $Current" -Style Secondary
+		Write-UiLine -Text "Press ENTER to keep the current path." -Style Secondary
+		Write-UiLine
 	}
 
 	& $drawCurrent
@@ -139,15 +139,42 @@ function Get-RobocopyEstimate {
 		[string]$Dest
 	)
 
-	$dryRun = robocopy `
-		$Source `
-		$Dest `
-		/L `
-		/NFL `
-		/NDL `
-		/NJH `
-		/NP `
-		@script:RobocopyCopyFlags
+	# Keep the same list-only arguments, but drain output asynchronously so
+	# the main thread can redraw during a long estimate or network wait.
+	$arguments = @($Source, $Dest, '/L', '/NFL', '/NDL', '/NJH', '/NP') + $script:RobocopyCopyFlags
+	$quoted = foreach ($argument in $arguments) { ConvertTo-RobocopyArgument -Value $argument }
+	$process = [System.Diagnostics.Process]::new()
+	$started = $false
+	try {
+		$process.StartInfo.FileName = (Get-Command robocopy.exe -CommandType Application -ErrorAction Stop).Source
+		$process.StartInfo.Arguments = $quoted -join ' '
+		$process.StartInfo.UseShellExecute = $false
+		$process.StartInfo.CreateNoWindow = $true
+		$process.StartInfo.RedirectStandardOutput = $true
+		$process.StartInfo.RedirectStandardError = $true
+		$process.StartInfo.StandardOutputEncoding = [Console]::OutputEncoding
+		$process.StartInfo.StandardErrorEncoding = [Console]::OutputEncoding
+		$started = $process.Start()
+		$outputTask = $process.StandardOutput.ReadToEndAsync()
+		$errorTask = $process.StandardError.ReadToEndAsync()
+		while (-not $process.HasExited) {
+			Update-UiScreen
+			Start-Sleep -Milliseconds $script:RobocopyProgressIntervalMs
+		}
+		$dryRun = $outputTask.GetAwaiter().GetResult() -split '\r\n|\r|\n'
+		$diagnostics = $errorTask.GetAwaiter().GetResult().Trim()
+		if ($diagnostics) { Write-ErrorMessage $diagnostics }
+	}
+	finally {
+		try {
+			if ($started -and -not $process.HasExited) {
+				try { $process.Kill() }
+				catch { if (-not $process.HasExited) { throw } }
+				$process.WaitForExit()
+			}
+		}
+		finally { $process.Dispose() }
+	}
 
 	$totalBytes = [long]($dryRun -match 'Bytes :' -split '[\t ]+')[3]
 	$totalFiles = [long]($dryRun -match 'Files :' -split '[\t ]+')[3]
@@ -467,7 +494,11 @@ function New-ProgressBar {
 }
 
 function New-ProgressLayout {
-	$layout = New-BoxLayout
+	param(
+		[int]$WindowWidth = [Console]::WindowWidth
+	)
+
+	$layout = New-BoxLayout -WindowWidth $WindowWidth
 	# ' [' + bar + '] ' + '100.00%'
 	$availableWidth = [Math]::Max(1, $layout.InnerWidth - 11)
 	$layout | Add-Member -NotePropertyMembers @{
@@ -481,33 +512,71 @@ function New-ProgressLayout {
 	} -PassThru
 }
 
+function New-CopyScreenLines {
+	param([int]$WindowWidth, [hashtable]$Display)
+
+	$estimate = $Display.Estimate
+	$progress = $Display.Progress
+	if ($Display.HeaderWidth -ne $WindowWidth -or $Display.HeaderEstimate -ne $estimate) {
+		$layout = New-ProgressLayout -WindowWidth $WindowWidth
+		$source = Format-UiPath -Path $Display.CopyPaths.Source -Width ($layout.InnerWidth - 15)
+		$dest = Format-UiPath -Path $Display.CopyPaths.Dest -Width ($layout.InnerWidth - 15)
+		$headers = @('')
+		$headers += Format-Box -Layout $layout -Title (Format-UiText -Text '  Copying' -Style Header) -TrailingBlank -Rows @(
+			"  Source:      $source"
+			"  Destination: $dest"
+			"  Preset:      $(Get-RobocopyPresetLabel -ThreadCount $Display.ThreadCount)"
+		)
+		$totalSize = if ($null -eq $estimate) { '...' } else { $estimate.TotalSize }
+		$totalFiles = if ($null -eq $estimate) { '...' } else { $estimate.TotalFiles }
+		$headers += Format-Box -Layout $layout -Title (Format-UiText -Text '  Estimating' -Style Progress) -Rows @(
+			"  Size:  $totalSize"
+			"  Files: $totalFiles"
+		)
+		if ($null -ne $estimate) { $headers += '' }
+		$Display.Layout = $layout
+		$Display.HeaderLines = $headers
+		$Display.HeaderWidth = $WindowWidth
+		$Display.HeaderEstimate = $estimate
+	}
+	$layout = $Display.Layout
+	$lines = @($Display.HeaderLines)
+	if ($Display.ShowProgress -and $null -ne $progress) {
+		$lines += New-OverallProgressBox -Layout $layout -Estimate $estimate -CurrentBytes $progress.CurrentBytes -CurrentFiles $progress.CurrentFiles
+		if (-not $Display.Completed) {
+			$lines += New-ItemProgressBox -Layout $layout -FileName $progress.FileName -ItemBytes $progress.ItemBytes -ItemPercent $progress.ItemPercent
+		}
+	}
+	return $lines
+}
+
 function Write-CopyProgress {
 	param(
-		[string[]]$OverallLines,
-		[string[]]$ItemLines,
-		[int]$CursorTop
+		[hashtable]$Display,
+		$CopyPaths,
+		[int]$ThreadCount,
+		$Estimate,
+		$Progress,
+		[switch]$Force,
+		[switch]$Completed
 	)
 
-	[Console]::SetCursorPosition(0, $CursorTop)
-	foreach ($line in $OverallLines) {
-		Write-UiSurface -Text $line
+	if (-not $Display.Registered) {
+		Reset-UiScreen
+		Add-UiBlock @{ Kind = 'Custom'; Builder = ${function:New-CopyScreenLines}; Data = $Display }
+		$Display.Registered = $true
 	}
-
-	$overallEnd = [Console]::CursorTop
-	$itemEnd = $overallEnd
-
-	if ($null -ne $ItemLines) {
-		foreach ($line in $ItemLines) {
-			Write-UiSurface -Text $line
-		}
-
-		$itemEnd = [Console]::CursorTop
+	$Display.CopyPaths = $CopyPaths
+	$Display.ThreadCount = $ThreadCount
+	$Display.Estimate = $Estimate
+	$Display.Progress = $Progress
+	$Display.Completed = [bool]$Completed
+	if ($null -ne $Progress -and $Progress.ProgressChanged) {
+		$Display.ShowProgress = $true
+		$script:UiScreen.Dirty = $true
 	}
-
-	return [pscustomobject]@{
-		OverallEnd = $overallEnd
-		ItemEnd = $itemEnd
-	}
+	Update-UiScreen -Force:($Force -or $Completed)
+	if ($null -ne $Progress -and -not $script:UiScreen.Dirty) { $Progress.ProgressChanged = $false }
 }
 
 function Parse-RobocopyProgressLine {
@@ -575,10 +644,8 @@ function New-ItemProgressBox {
 		[double]$ItemPercent
 	)
 
-	if (($Layout.PathStr.Length + $FileName.Length + 4) -gt $Layout.InnerWidth) {
-		$availableSpace = $Layout.InnerWidth - $Layout.PathStr.Length - 4
-		$FileName = "..." + $FileName.Substring($FileName.Length - $availableSpace)
-	}
+	$availableSpace = $Layout.InnerWidth - (Get-VisibleTextLength $Layout.PathStr) - 1
+	$FileName = Format-UiPath -Path $FileName -Width $availableSpace
 
 	$itemPath = $Layout.PathStr + $FileName
 	$currentItemBytes = ($ItemPercent / 100) * $ItemBytes
@@ -593,39 +660,6 @@ function New-ItemProgressBox {
 		$itemProgressBar
 		''
 	)
-}
-
-function Complete-CopyProgress {
-	param(
-		$Layout,
-		$Estimate,
-		[long]$CurrentBytes,
-		[long]$CurrentFiles,
-		[int]$ProgressTop,
-		[int]$OverallProgressEnd,
-		[int]$ItemProgressEnd,
-		[bool]$Initiated
-	)
-
-	if ($Initiated -eq $true) {
-		$overallStatus = New-OverallProgressBox `
-			-Layout $Layout `
-			-Estimate $Estimate `
-			-CurrentBytes $CurrentBytes `
-			-CurrentFiles $CurrentFiles
-
-		$progressEnds = Write-CopyProgress -OverallLines $overallStatus -CursorTop $ProgressTop
-		$OverallProgressEnd = $progressEnds.OverallEnd
-	}
-
-	[Console]::SetCursorPosition(0, $OverallProgressEnd)
-
-	for ($i = 0; $i -lt ($ItemProgressEnd - $OverallProgressEnd); $i++) {
-		Write-Host "".PadRight($Layout.ConsoleWidth)
-	}
-
-	[Console]::SetCursorPosition(0, $OverallProgressEnd)
-	[Console]::CursorVisible = $true
 }
 
 # =============================================================================
@@ -679,42 +713,35 @@ function Invoke-RobocopyTool {
 		}
 	}
 
-	Clear-Host
-	Write-Host ""
-	Show-InfoBox -Title "Copying" -TrailingBlank -Rows @(
-		"  Source:      $($copyPaths.Source)"
-		"  Destination: $($copyPaths.Dest)"
-		"  Preset:      $(Get-RobocopyPresetLabel -ThreadCount $threadCount)"
-	)
-	$estimateTop = [Console]::CursorTop
-	Show-InfoBox -Title "Estimating" -TitleStyle Progress -Rows @(
-		"  Size:  ..."
-		"  Files: ..."
-	)
+	$display = @{
+		Registered = $false
+		HeaderWidth = -1
+		HeaderEstimate = $null
+		Layout = $null
+		HeaderLines = @()
+		ShowProgress = $false
+	}
+	Write-CopyProgress -Display $display -CopyPaths $copyPaths -ThreadCount $threadCount -Force
 
-	$estimate = Get-RobocopyEstimate -Source $copyPaths.Source -Dest $copyPaths.Dest
+	try {
+		$estimate = Get-RobocopyEstimate -Source $copyPaths.Source -Dest $copyPaths.Dest
+	}
+	catch [System.Management.Automation.PipelineStoppedException] { throw }
+	catch {
+		Write-ErrorMessage "Estimation failed: $($_.Exception.Message)"
+		return 'Completed'
+	}
 
-	[Console]::SetCursorPosition(0, $estimateTop)
-	Show-InfoBox -Title "Estimating" -TitleStyle Progress -Rows @(
-		"  Size:  $($estimate.TotalSize)"
-		"  Files: $($estimate.TotalFiles)"
-	)
-	Write-Host ""
+	Write-CopyProgress -Display $display -CopyPaths $copyPaths -ThreadCount $threadCount -Estimate $estimate -Force
 
-	$layout = New-ProgressLayout
 	$state = New-RobocopyLogReader -Log $logPaths.Log
 	$process = $null
 	$started = $false
-	$initiated = $false
 	$progressClock = [System.Diagnostics.Stopwatch]::StartNew()
 	$lastProgressTick = -$script:RobocopyProgressIntervalMs
 
-	$progressTop = [Console]::CursorTop
-	$overallProgressEnd = $progressTop
-	$itemProgressEnd = $progressTop
-
 	try {
-		[Console]::CursorVisible = $false
+		Set-UiCursorVisible -Visible $false
 		$process = New-RobocopyProcess `
 			-Source $copyPaths.Source `
 			-Dest $copyPaths.Dest `
@@ -742,23 +769,15 @@ function Invoke-RobocopyTool {
 			# Like Folder Size, update counters for every item but build and draw
 			# the progress boxes only when the refresh interval has elapsed.
 			$now = $progressClock.ElapsedMilliseconds
-			if ($state.ProgressChanged -and ($now - $lastProgressTick) -ge $script:RobocopyProgressIntervalMs) {
+			if (($now - $lastProgressTick) -ge $script:RobocopyProgressIntervalMs) {
 				$lastProgressTick = $now
-				$overallStatus = New-OverallProgressBox `
-					-Layout $layout `
+				# Check dimensions even while Robocopy has no new log activity.
+				Write-CopyProgress `
+					-Display $display `
+					-CopyPaths $copyPaths `
+					-ThreadCount $threadCount `
 					-Estimate $estimate `
-					-CurrentBytes $state.CurrentBytes `
-					-CurrentFiles $state.CurrentFiles
-				$itemStatus = New-ItemProgressBox `
-					-Layout $layout `
-					-FileName $state.FileName `
-					-ItemBytes $state.ItemBytes `
-					-ItemPercent $state.ItemPercent
-				$progressEnds = Write-CopyProgress -OverallLines $overallStatus -ItemLines $itemStatus -CursorTop $progressTop
-				$overallProgressEnd = $progressEnds.OverallEnd
-				$itemProgressEnd = $progressEnds.ItemEnd
-				$initiated = $true
-				$state.ProgressChanged = $false
+					-Progress $state
 			}
 
 			# Never sleep with unread log data. Pause only after catching up,
@@ -776,15 +795,16 @@ function Invoke-RobocopyTool {
 			$state.CurrentFiles = $state.CopiedFiles
 		}
 	}
+	catch [System.Management.Automation.PipelineStoppedException] { throw }
 	catch {
-		Write-Host ""
+		Write-UiLine
 		Write-ErrorMessage "Copy interrupted: $($_.Exception.Message)"
-		Write-UiText -Text "Log: $($logPaths.Log)" -Style Secondary
+		Write-UiLine -Text "Log: $($logPaths.Log)" -Style Secondary
 		return 'Completed'
 	}
 	finally {
 		try {
-			# Ctrl+C or a display/read error must not leave a hidden copy running.
+			# Ctrl+C or a monitoring error must not leave a hidden copy running.
 			if ($started -and -not $process.HasExited) {
 				try {
 					$process.Kill()
@@ -805,19 +825,17 @@ function Invoke-RobocopyTool {
 			if ($null -ne $process) {
 				$process.Dispose()
 			}
-			[Console]::CursorVisible = $true
+			Set-UiCursorVisible -Visible $true
 		}
 	}
 
-	Complete-CopyProgress `
-		-Layout $layout `
+	Write-CopyProgress `
+		-Display $display `
+		-CopyPaths $copyPaths `
+		-ThreadCount $threadCount `
 		-Estimate $estimate `
-		-CurrentBytes $state.CurrentBytes `
-		-CurrentFiles $state.CurrentFiles `
-		-ProgressTop $progressTop `
-		-OverallProgressEnd $overallProgressEnd `
-		-ItemProgressEnd $itemProgressEnd `
-		-Initiated $initiated
+		-Progress $state `
+		-Completed
 
 	if ($exitCode -lt 0 -or $exitCode -gt $script:RobocopySuccessExitCodeMax) {
 		if (-not [string]::IsNullOrWhiteSpace($diagnostics)) {

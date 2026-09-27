@@ -1,12 +1,13 @@
 $script:FolderSizeProgressIntervalMs = 100
-$script:FolderSizeLastProgressTick = 0
 
 # =============================================================================
 #  Helpers
 # =============================================================================
 
 function New-FolderSizeProgressLayout {
-	$layout = New-BoxLayout
+	param([int]$WindowWidth)
+
+	$layout = New-BoxLayout -WindowWidth $WindowWidth
 	$layout | Add-Member -NotePropertyMembers @{
 		SizeStr = " Size:    "
 		FilesStr = " Files:   "
@@ -24,15 +25,8 @@ function New-FolderSizeProgressBox {
 		[uint64]$Bytes
 	)
 
-	if (($Layout.PathStr.Length + $ItemPath.Length + 4) -gt $Layout.InnerWidth) {
-		$availableSpace = $Layout.InnerWidth - $Layout.PathStr.Length - 4
-		if ($availableSpace -lt 1) {
-			$ItemPath = ''
-		}
-		else {
-			$ItemPath = "..." + $ItemPath.Substring($ItemPath.Length - $availableSpace)
-		}
-	}
+	$availableSpace = $Layout.InnerWidth - (Get-VisibleTextLength $Layout.PathStr) - 1
+	$ItemPath = Format-UiPath -Path $ItemPath -Width $availableSpace
 
 	$title = Format-UiText -Text " Scanning" -Style Progress
 
@@ -47,57 +41,46 @@ function New-FolderSizeProgressBox {
 	)
 }
 
-function Write-FolderSizeProgress {
-	param(
-		$Layout,
-		[string]$ItemPath,
-		[int]$Files,
-		[int]$Folders,
-		[uint64]$Bytes,
-		[int]$CursorTop,
-		[switch]$Force
-	)
+function New-FolderSizeScreenLines {
+	param([int]$WindowWidth, $Progress)
 
-	$now = [Environment]::TickCount
-	if (-not $Force -and ($now - $script:FolderSizeLastProgressTick) -lt $script:FolderSizeProgressIntervalMs) {
-		return
-	}
-
-	$script:FolderSizeLastProgressTick = $now
-
-	$lines = New-FolderSizeProgressBox `
-		-Layout $Layout `
-		-ItemPath $ItemPath `
-		-Files $Files `
-		-Folders $Folders `
-		-Bytes $Bytes
-
-	[Console]::SetCursorPosition(0, $CursorTop)
-	foreach ($line in $lines) {
-		Write-UiSurface -Text $line
-	}
+	$layout = New-FolderSizeProgressLayout -WindowWidth $WindowWidth
+	return @('') + @(New-FolderSizeProgressBox -Layout $layout -ItemPath $Progress.CurrentPath -Files $Progress.Files -Folders $Progress.Folders -Bytes $Progress.Bytes)
 }
 
-function Complete-FolderSizeProgress {
-	param(
-		$Layout,
-		[string]$ItemPath,
-		[int]$Files,
-		[int]$Folders,
-		[uint64]$Bytes,
-		[int]$CursorTop
-	)
+function Start-FolderSizeScan {
+	param([string]$Path, [hashtable]$Shared)
 
-	Write-FolderSizeProgress `
-		-Layout $Layout `
-		-ItemPath $ItemPath `
-		-Files $Files `
-		-Folders $Folders `
-		-Bytes $Bytes `
-		-CursorTop $CursorTop `
-		-Force
-
-	[Console]::CursorVisible = $true
+	$worker = [PowerShell]::Create()
+	try {
+		[void]$worker.AddScript({
+			param($ScanPath, $Shared, $Interval)
+			$files = 0
+			$folders = 0
+			$bytes = [uint64]0
+			$currentPath = $ScanPath
+			$clock = [System.Diagnostics.Stopwatch]::StartNew()
+			# Enumeration and counting remain the same. Ignore access errors
+			# without retaining an unbounded error stream in the worker.
+			Get-ChildItem -LiteralPath $ScanPath -Recurse -Force -ErrorAction Ignore | ForEach-Object {
+				$currentPath = $_.FullName
+				if ($_.PSIsContainer) { $folders++ }
+				else { $files++; $bytes += $_.Length }
+				if ($clock.ElapsedMilliseconds -ge $Interval) {
+					# Publish one complete snapshot, never independently changing
+					# fields while the UI reads them. Nothing writes to the console.
+					$Shared.Snapshot = @{ Files = $files; Folders = $folders; Bytes = $bytes; CurrentPath = $currentPath }
+					$clock.Restart()
+				}
+			}
+			$Shared.Snapshot = @{ Files = $files; Folders = $folders; Bytes = $bytes; CurrentPath = $currentPath }
+		}).AddArgument($Path).AddArgument($Shared).AddArgument($script:FolderSizeProgressIntervalMs)
+		return @{ Worker = $worker; Pending = $worker.BeginInvoke() }
+	}
+	catch {
+		$worker.Dispose()
+		throw
+	}
 }
 
 # =============================================================================
@@ -105,13 +88,13 @@ function Complete-FolderSizeProgress {
 # =============================================================================
 
 function Invoke-FolderSizeTool {
-	Clear-Host
+	Reset-UiScreen
 
 	$title = "Folder Size Counter"
 	Show-PathHelp -Title $title
 
 	$inputPath = Read-FolderPath -Prompt 'Path' -MustExist -RetryDraw {
-		Clear-Host
+		Reset-UiScreen
 		Show-PathHelp -Title $title
 	}
 	if ($null -eq $inputPath) {
@@ -131,63 +114,34 @@ function Invoke-FolderSizeTool {
 		$path = "\\?\" + $inputPath
 	}
 
-	Clear-Host
-	Write-Host ""
-
-	# Hashtable so ForEach-Object mutations stay visible to the caller.
-	$state = @{
-		Files = 0
-		Folders = 0
-		Bytes = [uint64]0
-		CurrentPath = $path
-	}
-	$layout = New-FolderSizeProgressLayout
-	$script:FolderSizeLastProgressTick = 0
+	Reset-UiScreen
+	$state = @{ Files = 0; Folders = 0; Bytes = [uint64]0; CurrentPath = $path }
+	$shared = [hashtable]::Synchronized(@{ Snapshot = $state })
+	$block = @{ Kind = 'Custom'; Builder = ${function:New-FolderSizeScreenLines}; Data = $state }
+	Add-UiBlock $block
+	$scan = $null
 
 	try {
-		[Console]::CursorVisible = $false
-		$progressTop = [Console]::CursorTop
-
-		Write-FolderSizeProgress `
-			-Layout $layout `
-			-ItemPath $state.CurrentPath `
-			-Files $state.Files `
-			-Folders $state.Folders `
-			-Bytes $state.Bytes `
-			-CursorTop $progressTop `
-			-Force
-
-		# SilentlyContinue keeps access-denied noise from jumping the
-		# in-place progress box. Counts still include every readable item.
-		Get-ChildItem -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue | ForEach-Object {
-			$state.CurrentPath = $_.FullName
-
-			if ($_.PSIsContainer) {
-				$state.Folders++
+		Set-UiCursorVisible -Visible $false
+		Update-UiScreen
+		$scan = Start-FolderSizeScan -Path $path -Shared $shared
+		while (-not $scan.Pending.IsCompleted) {
+			$snapshot = $shared.Snapshot
+			if (-not [object]::ReferenceEquals($state, $snapshot)) {
+				$state = $snapshot
+				$block.Data = $state
+				$script:UiScreen.Dirty = $true
 			}
-			else {
-				$state.Files++
-				$state.Bytes += $_.Length
-			}
-
-			Write-FolderSizeProgress `
-				-Layout $layout `
-				-ItemPath $state.CurrentPath `
-				-Files $state.Files `
-				-Folders $state.Folders `
-				-Bytes $state.Bytes `
-				-CursorTop $progressTop
+			# Check for resizing even if a directory/network read is waiting.
+			Update-UiScreen
+			Start-Sleep -Milliseconds $script:FolderSizeProgressIntervalMs
 		}
-
-		Complete-FolderSizeProgress `
-			-Layout $layout `
-			-ItemPath $state.CurrentPath `
-			-Files $state.Files `
-			-Folders $state.Folders `
-			-Bytes $state.Bytes `
-			-CursorTop $progressTop
-
-		Write-Host ""
+		[void]$scan.Worker.EndInvoke($scan.Pending)
+		$state = $shared.Snapshot
+		$block.Data = $state
+		Update-UiScreen -Force
+		Set-UiCursorVisible -Visible $true
+		Write-UiLine
 		Show-InfoBox -Title "Folder Size" -Rows @(
 			("  Path:        {0}" -f $inputPath)
 			("  Total size:  {0} ({1:N0} bytes)" -f (Format-ByteSize $state.Bytes), $state.Bytes)
@@ -195,13 +149,20 @@ function Invoke-FolderSizeTool {
 			("  Folders:     {0:N0}" -f $state.Folders)
 		)
 	}
+	catch [System.Management.Automation.PipelineStoppedException] { throw }
 	catch {
-		Write-Host ""
+		Write-UiLine
 		Write-ErrorMessage "Fatal error:"
 		Write-ErrorMessage $_.Exception.Message
 	}
 	finally {
-		[Console]::CursorVisible = $true
+		try {
+			if ($null -ne $scan) {
+				try { if (-not $scan.Pending.IsCompleted) { $scan.Worker.Stop() } }
+				finally { $scan.Worker.Dispose() }
+			}
+		}
+		finally { Set-UiCursorVisible -Visible $true }
 	}
 
 	return 'Completed'

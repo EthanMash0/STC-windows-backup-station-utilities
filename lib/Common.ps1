@@ -3,7 +3,7 @@ function Show-PathHelp {
 		[string]$Title
 	)
 
-	Write-Host ""
+	Write-UiLine
 	Show-InfoBox -Title $Title -TrailingBlank -Rows @(
 		(Format-UiText -Text "  Enter a local path like:" -Style Secondary)
 		"    D:\Users\STC"
@@ -96,7 +96,7 @@ function Read-FolderPath {
 		}
 
 		Write-ErrorMessage $errorMessage
-		Write-Host ""
+		Write-UiLine
 	}
 }
 

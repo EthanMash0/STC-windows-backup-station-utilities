@@ -101,7 +101,7 @@ The log reader uses 64 KB buffers and immediately reads another chunk when more 
 
 #### Robocopy exit codes
 
-Exit codes **0 through 7** are treated as success (no fatal failure). **8 or higher**, or a negative process exit code, means the copy failed; check the log.
+Exit codes **0 through 7** are treated as success (no fatal failure). **8 or higher**, or a negative process exit code, means the copy failed; check the log. The copy summary status uses the meaning below.
 
 Robocopy returns a bit mask. The base flags are **1** (files copied), **2** (extra files or directories on the destination), **4** (mismatched files or directories), **8** (copy failures after retries), and **16** (serious error). Combined values are the sum of those flags:
 

@@ -383,6 +383,88 @@ function Confirm-RobocopyStart {
 	}
 }
 
+function Get-RobocopyExitDescription {
+	param(
+		[int]$ExitCode
+	)
+
+	if ($ExitCode -lt 0) {
+		return 'The copy process ended with an error before Robocopy reported a result.'
+	}
+
+	# Wording matches the README exit-code table for the documented values.
+	switch ($ExitCode) {
+		0 { return 'No files were copied. No failure. No mismatches. The trees already match.' }
+		1 { return 'Files were copied successfully.' }
+		2 { return 'Extra files or directories on the destination. No files were copied.' }
+		3 { return 'Files were copied. Extra files were present. No failure.' }
+		4 { return 'Mismatched files or directories. No files were copied.' }
+		5 { return 'Files were copied. Some files were mismatched. No failure.' }
+		6 { return 'Extra files and mismatched files. No files were copied. No failure.' }
+		7 { return 'Files were copied. Mismatches and extra files were present. No failure.' }
+		8 { return 'Some files or directories could not be copied (retry limit exceeded).' }
+		9 { return 'Files were copied, but some copy failures occurred.' }
+		10 { return 'Extra files present, and some copy failures.' }
+		11 { return 'Files were copied, extra files were present, and some copy failures.' }
+		12 { return 'Mismatches present, and some copy failures.' }
+		13 { return 'Files were copied, mismatches were present, and some copy failures.' }
+		14 { return 'Extra files, mismatches, and some copy failures.' }
+		15 { return 'Files were copied; extra files, mismatches, and copy failures.' }
+		16 { return 'Serious error. Robocopy did not copy any files (usage error or insufficient access).' }
+	}
+
+	# Values above 16 are the same flags combined with a serious error.
+	$parts = @()
+	if ($ExitCode -band 16) {
+		$parts += 'Serious error (usage error or insufficient access).'
+	}
+	if ($ExitCode -band 8) {
+		$parts += 'Some files or directories could not be copied (retry limit exceeded).'
+	}
+	if ($ExitCode -band 1) {
+		$parts += 'Files were copied.'
+	}
+	if ($ExitCode -band 2) {
+		$parts += 'Extra files or directories were present on the destination.'
+	}
+	if ($ExitCode -band 4) {
+		$parts += 'Mismatched files or directories were present.'
+	}
+
+	$known = 1 -bor 2 -bor 4 -bor 8 -bor 16
+	if (($ExitCode -band (-bnot $known)) -ne 0) {
+		$parts += 'Unrecognized Robocopy flags were also set.'
+	}
+	if ($parts.Count -eq 0) {
+		return "Unrecognized Robocopy exit code $ExitCode."
+	}
+	return ($parts -join ' ')
+}
+
+function Get-RobocopyConsoleDiagnostics {
+	param(
+		[AllowEmptyString()]
+		[string]$StandardOutput,
+
+		[AllowEmptyString()]
+		[string]$StandardError
+	)
+
+	# /UNILOG still prints "Log File : ..." on the console. The summary already
+	# shows that path, so drop the banner and keep any real error text.
+	$chunks = @($StandardOutput, $StandardError) | Where-Object {
+		-not [string]::IsNullOrWhiteSpace($_)
+	}
+	if (-not $chunks) {
+		return ''
+	}
+
+	$lines = ($chunks -join [Environment]::NewLine) -split '\r\n|\r|\n' | Where-Object {
+		$_ -notmatch '^\s*Log File\s*:'
+	}
+	return (($lines -join [Environment]::NewLine).Trim())
+}
+
 function Write-RobocopySummary {
 	param(
 		[string]$Source,
@@ -397,11 +479,7 @@ function Write-RobocopySummary {
 
 	$duration = $End - $Start
 	$succeeded = $ExitCode -ge 0 -and $ExitCode -le $script:RobocopySuccessExitCodeMax
-	$status = if ($succeeded) {
-		"Completed without fatal failure"
-	} else {
-		"Failed"
-	}
+	$status = Get-RobocopyExitDescription -ExitCode $ExitCode
 	$statusStyle = if ($succeeded) { 'Success' } else { 'Error' }
 
 	$summary = @"
@@ -752,7 +830,7 @@ function Invoke-RobocopyTool {
 		# slow screen updates cannot fill an output pipe and stall the copy.
 		$started = $process.Start()
 		$start = $process.StartTime
-		# Drain startup diagnostics asynchronously, including log-open errors.
+		# Drain console output asynchronously, including log-open errors.
 		# There is no /TEE, so file activity goes only to the Unicode log.
 		$outputTask = $process.StandardOutput.ReadToEndAsync()
 		$errorTask = $process.StandardError.ReadToEndAsync()
@@ -788,7 +866,9 @@ function Invoke-RobocopyTool {
 		}
 
 		# Finish asynchronous reads before disposing their process streams.
-		$diagnostics = ($outputTask.GetAwaiter().GetResult() + $errorTask.GetAwaiter().GetResult()).Trim()
+		$diagnostics = Get-RobocopyConsoleDiagnostics `
+			-StandardOutput $outputTask.GetAwaiter().GetResult() `
+			-StandardError $errorTask.GetAwaiter().GetResult()
 
 		if ($null -ne $state.CopiedBytes -and $null -ne $state.CopiedFiles) {
 			$state.CurrentBytes = $state.CopiedBytes
